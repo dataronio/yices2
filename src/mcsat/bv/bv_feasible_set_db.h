@@ -18,18 +18,18 @@
 
 #pragma once
 
+#include <mcsat/bv/bdd_manager.h>
 #include <stdio.h>
 
 #include "mcsat/variable_db.h"
 #include "mcsat/mcsat_types.h"
 #include "mcsat/value.h"
-#include "mcsat/bv/bv_bdd_manager.h"
 
 /** Contains the map from variables to feasible sets that can be backtracked */
 typedef struct bv_feasible_set_db_s bv_feasible_set_db_t;
 
 /** Create a new database */
-bv_feasible_set_db_t* bv_feasible_set_db_new(plugin_context_t* ctx, bv_bdd_manager_t* bddm);
+bv_feasible_set_db_t* bv_feasible_set_db_new(plugin_context_t* ctx, bdd_manager_t* bddm);
 
 /** Delete the database */
 void bv_feasible_set_db_delete(bv_feasible_set_db_t* db);
@@ -42,10 +42,10 @@ void bv_feasible_set_db_delete(bv_feasible_set_db_t* db);
  *
  * If more than one reason, it's considered a disjunctive top-level assertion.
  */
-bool bv_feasible_set_db_update(bv_feasible_set_db_t* db, variable_t x, bdd_t new_set, variable_t* reasons, uint32_t reasons_count);
+bool bv_feasible_set_db_update(bv_feasible_set_db_t* db, variable_t x, bddvec_t new_set, variable_t* reasons, uint32_t reasons_count);
 
 /** Get the feasible set of a variable */
-bdd_t bv_feasible_set_db_get(const bv_feasible_set_db_t* db, variable_t x);
+bddvec_t bv_feasible_set_db_get(const bv_feasible_set_db_t* db, variable_t x);
 
 /** Pick a value from the feasible set */
 const mcsat_value_t* bv_feasible_set_db_pick_value(bv_feasible_set_db_t* db, variable_t x);

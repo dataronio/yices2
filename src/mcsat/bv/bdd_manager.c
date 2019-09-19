@@ -16,7 +16,7 @@
  * along with Yices.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "bv_bdd_manager.h"
+#include <mcsat/bv/bdd_manager.h>
 #include "bdd_computation.h"
 #include "bv_utils.h"
 #include "utils/memalloc.h"
@@ -29,25 +29,149 @@
 #include "mcsat/plugin.h"
 #include "mcsat/tracing.h"
 
-#ifndef NDEBUG
-#define DD_DEBUG
-#define DD_STATS
-#endif
+/** Manage fixed size allocations */
+typedef struct bddvec_allocator_s {
+  /** Size of the bitvector */
+  uint32_t vec_size;
+  /** Memory for the BDDs */
+  BDD** bdds;
+  /** Size of the BDD memory */
+  uint32_t bdds_size;
+  /** Allocated BDD memory */
+  uint32_t bdds_allocated;
+  /** List of free id's */
+  ivector_t free_list;
+} bddvec_allocator_t;
 
-#include <cudd.h>
+void bddvec_allocator_construct(bddvec_allocator_t* m, uint32_t size) {
+  m->vec_size = size;
+  m->bdds = NULL;
+  m->bdds_size = 0;
+  m->bdds_allocated = 0;
+  init_ivector(&m->free_list, 0);
+}
 
-/** Null BDD */
-const bdd_t bdd_null = { { NULL } };
+void bddvec_allocator_destruct(bddvec_allocator_t* m) {
+  delete_ivector(&m->free_list);
+  safe_free(m->bdds);
+}
 
-/** Null BDDs */
-const bv_bdd_t bv_bdd_null = { NULL };
+BDD** bddvec_allocator_get(bddvec_allocator_t* m, bddvec_id_t id) {
+  assert(m->vec_size*id + m->vec_size <= m->bdds_size);
+  return m->bdds + m->vec_size*id;
+}
+
+void bddvec_allocator_delete_vec(bddvec_allocator_t* m, bddvec_id_t id) {
+  uint32_t start = m->vec_size * id;
+  uint32_t end = start + m->vec_size;
+  for (uint32_t i = start; i < end; ++ i) {
+    m->bdds[i] = NULL;
+  }
+  ivector_push(&m->free_list, id);
+}
+
+bddvec_id_t bddvec_allocator_new_vec(bddvec_allocator_t* m) {
+
+  bddvec_id_t result = bddvec_null_id;
+
+  // Check free list
+  if (m->free_list.size > 0) {
+    result = ivector_pop2(&m->free_list);
+  } else {
+    // New id is at the end
+    result = m->bdds_size / m->vec_size;
+    m->bdds_size += m->vec_size;
+
+    // Make sure enough is allocated
+    while (m->bdds_size > m->bdds_allocated) {
+      uint32_t old_allocated = m->bdds_allocated;
+      m->bdds_allocated += (1 + (old_allocated >> 1))*m->vec_size;
+      m->bdds = safe_realloc(m->bdds, m->bdds_allocated * sizeof(BDD*));
+      for (; old_allocated < m->bdds_allocated; old_allocated ++) {
+        m->bdds[old_allocated] = NULL;
+      }
+    }
+  }
+
+  return result;
+}
+
+typedef struct bddvec_manager_s {
+  uint32_t size;
+  uint32_t capacity;
+  bddvec_allocator_t* alloc;
+} bddvec_manager_t;
+
+#define bddvec_MANAGER_DEFAULT_SIZE 64;
+
+void bddvec_manager_ensure_allocated(bddvec_manager_t* m) {
+  uint32_t i;
+  uint32_t n = m->capacity;
+  while (m->size > n) {
+    n += 1;
+    n += n >> 2;
+  }
+  if (n > m->capacity) {
+    m->alloc = (bddvec_allocator_t*) safe_realloc(m->alloc, n*sizeof(bddvec_allocator_t));
+    for (i = m->capacity; i < n; ++ i) {
+      bddvec_allocator_construct(m->alloc + i, i);
+    }
+    m->capacity = n;
+  }
+}
+
+void bddvec_manager_ensure_size(bddvec_manager_t* m, uint32_t size) {
+  if (size >= m->size) {
+    m->size = size + 1;
+    bddvec_manager_ensure_allocated(m);
+  }
+}
+
+void bddvec_manager_construct(bddvec_manager_t* m) {
+  m->alloc = NULL;
+  m->size = bddvec_MANAGER_DEFAULT_SIZE;
+  m->capacity = 0;
+  bddvec_manager_ensure_allocated(m);
+}
+
+void bddvec_manager_destruct(bddvec_manager_t* m) {
+  uint32_t i;
+  for (i = 0; i < m->capacity; ++ i) {
+    bddvec_allocator_destruct(m->alloc + i);
+  }
+  safe_free(m->alloc);
+}
+
+bddvec_t bddvec_manager_new_vec(bddvec_manager_t* m, uint32_t size) {
+  bddvec_manager_ensure_size(m, size);
+  bddvec_t result = { size, bddvec_allocator_new_vec(m->alloc + size) };
+  return result;
+}
+
+BDD** bddvec_manager_get_bdds(const bddvec_manager_t* m, bddvec_t v) {
+  assert(v.size < m->size);
+  return bddvec_allocator_get(m->alloc + v.size, v.id);
+}
+
+void bddvec_manager_delete_vec(bddvec_manager_t* m, bddvec_t v) {
+  assert(v.size < m->size);
+  bddvec_allocator_delete_vec(m->alloc + v.size, v.id);
+}
+
+/** Null vector id */
+const bddvec_id_t bddvec_null_id = UINT32_MAX;
+
+/** Actual null vector */
+const bddvec_t bddvec_null = { 0, bddvec_null_id };
 
 /** Information stored about the terms. */
 typedef struct {
   /** The term (size of the term is in value.size) */
   term_t t;
-  /** Index of the BDDs (only valid if timestamp != 0) */
-  uint32_t bdd_index;
+  /** Id of the BDDs (only valid if timestamp != 0) */
+  bddvec_t v;
+  /** If of the constant BDDs */
+  bddvec_t v_const;
   /** Time-stamp of the last BDD change modulo unassigned variable (0 for never) */
   uint32_t bdd_timestamp;
   /** Unit variable of term t, when BDD was computed (NULL if none) */
@@ -59,10 +183,11 @@ typedef struct {
 } term_info_t;
 
 static
-void term_info_construct(term_info_t* term_info, term_t t, uint32_t bdd_index, uint32_t bitsize) {
+void term_info_construct(term_info_t* term_info, term_t t, bddvec_t v, bddvec_t v_const, uint32_t bitsize) {
   assert(bitsize > 0);
   term_info->t = t;
-  term_info->bdd_index = bdd_index;
+  term_info->v = v;
+  term_info->v_const = v_const;
   term_info->bdd_timestamp = 0;
   term_info->unassigned_variable = NULL_TERM;
   init_bvconstant(&term_info->value);
@@ -70,13 +195,8 @@ void term_info_construct(term_info_t* term_info, term_t t, uint32_t bdd_index, u
   term_info->value_timestamp = 0;
 }
 
-static
-void term_info_destruct(term_info_t* term_info) {
-  delete_bvconstant(&term_info->value);
-}
-
 /** All data needed for managing the BDDs. */
-struct bv_bdd_manager_s {
+struct bdd_manager_s {
   /** Term table */
   const plugin_context_t* ctx;
   /** Cudd manager to be used for all */
@@ -98,11 +218,7 @@ struct bv_bdd_manager_s {
   ivector_t term_list;
 
   /** Memory for storing the BDD pointers */
-  BDD** bdd_memory;
-  /** BDD memory size */
-  uint32_t bdd_memory_size;
-  /** BDD memory capacity */
-  uint32_t bdd_memory_capacity;
+  bddvec_manager_t bdds;
 
   /** The variable that we consider unassigned when computing */
   term_t unassigned_var;
@@ -121,11 +237,23 @@ struct bv_bdd_manager_s {
 
   /** BDD constant true */
   BDD* bdd_true;
+
+  /** BDD constant false in vector form */
+  bddvec_t bdd_false_v;
+
+  /** BDD constant true in vector form */
+  bddvec_t bdd_true_v;
 };
 
-bv_bdd_manager_t* bv_bdd_manager_new(const plugin_context_t* ctx) {
+/** Delete all BDD info (constant, and the BDDs allocated) */
+static
+void term_info_destruct(term_info_t* term_info) {
+  delete_bvconstant(&term_info->value);
+}
+
+bdd_manager_t* bdd_manager_new(const plugin_context_t* ctx) {
   // Allocate
-  bv_bdd_manager_t* bddm = (bv_bdd_manager_t*) safe_malloc(sizeof(bv_bdd_manager_t));
+  bdd_manager_t* bddm = (bdd_manager_t*) safe_malloc(sizeof(bdd_manager_t));
 
   bddm->ctx= ctx;
   bddm->cudd = bdds_new();
@@ -133,9 +261,8 @@ bv_bdd_manager_t* bv_bdd_manager_new(const plugin_context_t* ctx) {
   bddm->term_info_size = 0;
   bddm->term_info_capacity = 0;
   bddm->timestamp = 1;
-  bddm->bdd_memory = 0;
-  bddm->bdd_memory_size = 0;
-  bddm->bdd_memory_capacity = 0;
+
+  bddvec_manager_construct(&bddm->bdds);
 
   init_int_hmap(&bddm->term_to_info_index, 0);
   init_ivector(&bddm->term_list, 0);
@@ -151,21 +278,27 @@ bv_bdd_manager_t* bv_bdd_manager_new(const plugin_context_t* ctx) {
   bdds_mk_zero(bddm->cudd, &bddm->bdd_false, 1);
   bdds_mk_one(bddm->cudd, &bddm->bdd_true, 1);
 
+  bddm->bdd_false_v = bddvec_manager_new_vec(&bddm->bdds, 1);
+  BDD** bdd_false_v_bdds = bddvec_manager_get_bdds(&bddm->bdds, bddm->bdd_false_v);
+  bdd_false_v_bdds[0] = bddm->bdd_false;
+
+  bddm->bdd_true_v = bddvec_manager_new_vec(&bddm->bdds, 1);
+  BDD** bdd_true_v_bdds = bddvec_manager_get_bdds(&bddm->bdds, bddm->bdd_true_v);
+  bdd_true_v_bdds[0] = bddm->bdd_true;
+
   return bddm;
 }
 
-bdd_t bv_bdd_manager_true(const bv_bdd_manager_t* bddm) {
-  bdd_t result = { { bddm->bdd_true } };
-  return result;
+bddvec_t bdd_manager_true(const bdd_manager_t* bddm) {
+  return bddm->bdd_true_v;
 }
 
-bdd_t bv_bdd_manager_false(const bv_bdd_manager_t* bddm) {
-  bdd_t result = { { bddm->bdd_false } };
-  return result;
+bddvec_t bdd_manager_false(const bdd_manager_t* bddm) {
+  return bddm->bdd_false_v;
 }
 
 static inline
-term_info_t* bv_bdd_manager_get_info(const bv_bdd_manager_t* bddm, term_t t) {
+term_info_t* bdd_manager_get_info(const bdd_manager_t* bddm, term_t t) {
   // Destruct the term info
   int_hmap_pair_t* info_find = int_hmap_find((int_hmap_t*) &bddm->term_to_info_index, t);
   assert(info_find != NULL);
@@ -174,59 +307,45 @@ term_info_t* bv_bdd_manager_get_info(const bv_bdd_manager_t* bddm, term_t t) {
   return t_info;
 }
 
-static inline
-BDD** bv_bdd_manager_get_bdds_from_info(const bv_bdd_manager_t* bddm, const term_info_t* info) {
-  uint32_t bdd_index = info->bdd_index;
-  BDD** bdds = bddm->bdd_memory + bdd_index;
-  return bdds;
-}
-
-static inline
-BDD** bv_bdd_manager_get_constant_bdds_from_info(const bv_bdd_manager_t* bddm, const term_info_t* info) {
-  uint32_t bdd_index = info->bdd_index;
-  BDD** bdds = bddm->bdd_memory + bdd_index + info->value.bitsize;
-  return bdds;
-}
-
 /**
  * If the term contains the unassigned variable: return term BDDs
  * Otherwise: return constant BDDs
  */
 static inline
-BDD** bv_bdd_manager_get_bdds(bv_bdd_manager_t* bddm, term_t t) {
-  term_info_t* t_info = bv_bdd_manager_get_info(bddm, t);
+BDD** bdd_manager_get_bdds(bdd_manager_t* bddm, term_t t) {
+  term_info_t* t_info = bdd_manager_get_info(bddm, t);
   int_hmap_pair_t* find = int_hmap_find(&bddm->visited, t);
   assert(find != NULL);
   if (find->val) {
     // Contains the unassigned variable, so we get the BDDs
-    return bv_bdd_manager_get_bdds_from_info(bddm, t_info);
+    return bddvec_manager_get_bdds(&bddm->bdds, t_info->v);
   } else {
     // Convert the value to BDD
     const bvconstant_t* value = &t_info->value;
-    BDD** out = bv_bdd_manager_get_constant_bdds_from_info(bddm, t_info);
+    BDD** out = bddvec_manager_get_bdds(&bddm->bdds, t_info->v_const);
     bdds_clear(bddm->cudd, out, value->bitsize);
     bdds_mk_constant(bddm->cudd, out, value->bitsize, value);
     return out;
   }
 }
 
-void bv_bdd_manager_delete(bv_bdd_manager_t* bddm) {
+void bdd_manager_delete(bdd_manager_t* bddm) {
 
-  term_table_t* terms = bddm->ctx->terms;
   CUDD* cudd = bddm->cudd;
 
   // Decrease reference counts and destruct all term info
   for (uint32_t i = 0; i < bddm->term_list.size; ++ i) {
     // Term and info
     term_t t = bddm->term_list.data[i];
-    uint32_t t_bitsize = bv_term_bitsize(terms, t);
-    term_info_t* t_info = bv_bdd_manager_get_info(bddm, t);
-    assert(t_bitsize == t_info->value.bitsize);
-    BDD** t_bdd_memory = bv_bdd_manager_get_bdds_from_info(bddm, t_info);
-    uint32_t allocated_size = 2*t_bitsize;
-    bdds_clear(cudd, t_bdd_memory, allocated_size);
+    term_info_t* t_info = bdd_manager_get_info(bddm, t);
+    bdd_manager_delete_vec(bddm, t_info->v);
+    bddvec_manager_delete_vec(&bddm->bdds, t_info->v);
+    bdd_manager_delete_vec(bddm, t_info->v_const);
+    bddvec_manager_delete_vec(&bddm->bdds, t_info->v_const);
     term_info_destruct(t_info);
   }
+
+  bddvec_manager_destruct(&bddm->bdds);
 
   delete_int_hmap(&bddm->term_to_info_index);
   delete_ivector(&bddm->term_list);
@@ -238,10 +357,9 @@ void bv_bdd_manager_delete(bv_bdd_manager_t* bddm) {
   bdds_clear(cudd, &bddm->bdd_false, 1);
   bdds_clear(cudd, &bddm->bdd_true, 1);
 
-  bdds_delete(bddm->cudd);
+  bdds_delete(cudd);
 
   safe_free(bddm->term_info);
-  safe_free(bddm->bdd_memory);
   safe_free(bddm);
 }
 
@@ -249,7 +367,7 @@ void bv_bdd_manager_delete(bv_bdd_manager_t* bddm) {
 #define BV_BDD_MEM_MAX_SIZE (UINT32_MAX/8)
 
 static
-void bv_bdd_manager_ensure_term_capacity(bv_bdd_manager_t* bddm, uint32_t var_index) {
+void bdd_manager_ensure_term_capacity(bdd_manager_t* bddm, uint32_t var_index) {
   uint32_t n;
   while (bddm->term_info_capacity <= var_index) {
     n = bddm->term_info_capacity;
@@ -267,31 +385,12 @@ void bv_bdd_manager_ensure_term_capacity(bv_bdd_manager_t* bddm, uint32_t var_in
   }
 }
 
-static
-void bv_bdd_manager_ensure_bdd_capacity(bv_bdd_manager_t* bddm, uint32_t term_index) {
-  uint32_t n;
-  while (bddm->bdd_memory_capacity <= term_index) {
-    n = bddm->bdd_memory_capacity;
-    if (n == 0) {
-      n = BV_BDD_MEM_DEFAULT_SIZE;
-    } else {
-      n ++;
-      n += n >> 1;
-      if (n >= BV_BDD_MEM_MAX_SIZE) {
-        out_of_memory();
-      }
-    }
-    bddm->bdd_memory = (BDD**) safe_realloc(bddm->bdd_memory, n*sizeof(BDD*));
-    bddm->bdd_memory_capacity = n;
-  }
-}
-
-bool bv_bdd_manager_has_term(const bv_bdd_manager_t* bddm, term_t term) {
+bool bdd_manager_has_term(const bdd_manager_t* bddm, term_t term) {
   int_hmap_pair_t* find = int_hmap_find((int_hmap_t*) &bddm->term_to_info_index, term);
   return (find != NULL);
 }
 
-uint32_t bv_bdd_manager_allocate_term_info(bv_bdd_manager_t* bddm, term_t t, uint32_t bitsize) {
+uint32_t bdd_manager_allocate_term_info(bdd_manager_t* bddm, term_t t, uint32_t bitsize) {
 
   assert(int_hmap_find(&bddm->term_to_info_index, t) == NULL);
   assert(bv_term_bitsize(bddm->ctx->terms, t) == bitsize);
@@ -300,21 +399,20 @@ uint32_t bv_bdd_manager_allocate_term_info(bv_bdd_manager_t* bddm, term_t t, uin
   uint32_t t_info_index = bddm->term_info_size;
   int_hmap_add(&bddm->term_to_info_index, t, t_info_index);
   // Make sure there is enough memory
-  bv_bdd_manager_ensure_term_capacity(bddm, t_info_index);
+  bdd_manager_ensure_term_capacity(bddm, t_info_index);
   // Increase the size
   term_info_t* x_info = bddm->term_info + t_info_index;
   bddm->term_info_size ++;
-  // Add the BDD reference for t
-  uint32_t t_bdd_index = bddm->bdd_memory_size;
-  // Make sure there is enough memory (bitsize for non-value + bitsize for value)
-  uint32_t bdd_allocate_size = 2*bitsize;
-  bv_bdd_manager_ensure_bdd_capacity(bddm, t_bdd_index + bdd_allocate_size);
-  // Construct: set all BDDs to null
-  BDD** t_bdds = bddm->bdd_memory + t_bdd_index;
-  bddm->bdd_memory_size += bdd_allocate_size;
-  bdds_init(t_bdds, bdd_allocate_size);
+  // Add the BDD vector for t
+  bddvec_t v = bddvec_manager_new_vec(&bddm->bdds, bitsize);
+  BDD** v_bdds = bddvec_manager_get_bdds(&bddm->bdds, v);
+  bdds_init(v_bdds, v.size);
+  // Add the BDD vector for t's constant value
+  bddvec_t v_const = bddvec_manager_new_vec(&bddm->bdds, bitsize);
+  BDD** v_const_bdds = bddvec_manager_get_bdds(&bddm->bdds, v_const);
+  bdds_init(v_const_bdds, v_const.size);
   // Construct info
-  term_info_construct(x_info, t, t_bdd_index, bitsize);
+  term_info_construct(x_info, t, v, v_const, bitsize);
   // Remember the allocated terms
   ivector_push(&bddm->term_list, t);
 
@@ -325,7 +423,7 @@ uint32_t bv_bdd_manager_allocate_term_info(bv_bdd_manager_t* bddm, term_t t, uin
  * Recursively allocate the data for all bit-vector terms in t.
  */
 static
-void bv_bdd_manager_ensure_term_data(bv_bdd_manager_t* bddm, term_t t, uint32_t bitsize) {
+void bdd_manager_ensure_term_data(bdd_manager_t* bddm, term_t t, uint32_t bitsize) {
 
   term_table_t* terms = bddm->ctx->terms;
 
@@ -333,19 +431,19 @@ void bv_bdd_manager_ensure_term_data(bv_bdd_manager_t* bddm, term_t t, uint32_t 
   if (info_index_find == NULL) {
 
     if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
-      ctx_trace_printf(bddm->ctx, "bv_bdd_manager: allocating term/BDD data for ");
+      ctx_trace_printf(bddm->ctx, "bdd_manager: allocating term/BDD data for ");
       ctx_trace_term(bddm->ctx, t);
     }
 
     // Allocate this term
-    uint32_t t_info_index = bv_bdd_manager_allocate_term_info(bddm, t, bitsize);
+    uint32_t t_info_index = bdd_manager_allocate_term_info(bddm, t, bitsize);
     term_info_t* t_info = bddm->term_info + t_info_index;
-    BDD** t_bdds = bv_bdd_manager_get_bdds_from_info(bddm, t_info);
+    BDD** t_bdds = bddvec_manager_get_bdds(&bddm->bdds, t_info->v);
 
     // Ensure data for the sub-terms
     if (is_neg_term(t)) {
       term_t t_pos = unsigned_term(t);
-      bv_bdd_manager_ensure_term_data(bddm, t_pos, bitsize);
+      bdd_manager_ensure_term_data(bddm, t_pos, bitsize);
     } else {
       term_kind_t t_kind = term_kind(terms, t);
       switch (t_kind) {
@@ -359,7 +457,7 @@ void bv_bdd_manager_ensure_term_data(bv_bdd_manager_t* bddm, term_t t, uint32_t 
         composite_term_t* atom_comp = composite_term_desc(terms, t);
         for (uint32_t i = 0; i < atom_comp->arity; ++ i) {
           uint32_t child_bitsize = bv_term_bitsize(terms, atom_comp->arg[i]);
-          bv_bdd_manager_ensure_term_data(bddm, atom_comp->arg[i], child_bitsize);
+          bdd_manager_ensure_term_data(bddm, atom_comp->arg[i], child_bitsize);
         }
         break;
       }
@@ -378,7 +476,7 @@ void bv_bdd_manager_ensure_term_data(bv_bdd_manager_t* bddm, term_t t, uint32_t 
           uint32_t t_i_bitsize = bv_term_bitsize(terms, t_comp->arg[i]);
           assert(t_kind == BV_ARRAY || t_i_bitsize == bitsize);
           assert(t_kind != BV_ARRAY || t_i_bitsize == 1);
-          bv_bdd_manager_ensure_term_data(bddm, t_comp->arg[i], t_i_bitsize);
+          bdd_manager_ensure_term_data(bddm, t_comp->arg[i], t_i_bitsize);
         }
         break;
       }
@@ -386,7 +484,7 @@ void bv_bdd_manager_ensure_term_data(bv_bdd_manager_t* bddm, term_t t, uint32_t 
         select_term_t* desc = bit_term_desc(terms, t);
         term_t child = desc->arg;
         uint32_t child_bitsize = bv_term_bitsize(terms, child);
-        bv_bdd_manager_ensure_term_data(bddm, child, child_bitsize);
+        bdd_manager_ensure_term_data(bddm, child, child_bitsize);
         break;
       }
       case BV_POLY: {
@@ -396,7 +494,7 @@ void bv_bdd_manager_ensure_term_data(bv_bdd_manager_t* bddm, term_t t, uint32_t 
           if (t_poly->mono[i].var == const_idx) continue;
           term_t var = t_poly->mono[i].var;
           assert(bv_term_bitsize(terms, var) == bitsize);
-          bv_bdd_manager_ensure_term_data(bddm, var, bitsize);
+          bdd_manager_ensure_term_data(bddm, var, bitsize);
         }
         break;
       }
@@ -407,7 +505,7 @@ void bv_bdd_manager_ensure_term_data(bv_bdd_manager_t* bddm, term_t t, uint32_t 
           if (t_poly->mono[i].var == const_idx) continue;
           term_t var = t_poly->mono[i].var;
           assert(bv_term_bitsize(terms, var) == bitsize);
-          bv_bdd_manager_ensure_term_data(bddm, var, bitsize);
+          bdd_manager_ensure_term_data(bddm, var, bitsize);
         }
         break;
       }
@@ -416,7 +514,7 @@ void bv_bdd_manager_ensure_term_data(bv_bdd_manager_t* bddm, term_t t, uint32_t 
         for (uint32_t i = 0; i < t_pprod->len; ++ i) {
           term_t var = t_pprod->prod[i].var;
           assert(bv_term_bitsize(terms, var) == bitsize);
-          bv_bdd_manager_ensure_term_data(bddm, var, bitsize);
+          bdd_manager_ensure_term_data(bddm, var, bitsize);
         }
         break;
       }
@@ -460,9 +558,9 @@ void bv_bdd_manager_ensure_term_data(bv_bdd_manager_t* bddm, term_t t, uint32_t 
   }
 }
 
-void bv_bdd_manager_add_term(bv_bdd_manager_t* bddm, term_t t) {
+void bdd_manager_add_term(bdd_manager_t* bddm, term_t t) {
   uint32_t bitsize = bv_term_bitsize(bddm->ctx->terms, t);
-  bv_bdd_manager_ensure_term_data(bddm, t, bitsize);
+  bdd_manager_ensure_term_data(bddm, t, bitsize);
 }
 
 /**
@@ -477,17 +575,17 @@ void bv_bdd_manager_add_term(bv_bdd_manager_t* bddm, term_t t) {
  * If the return value is false the BDD timestamp should be ignored.
  */
 static
-bool bv_bdd_manager_recompute_timestamps(bv_bdd_manager_t* bddm, term_t t, uint32_t bitsize, uint32_t* bdd_timestamp, uint32_t* value_timestamp) {
+bool bdd_manager_recompute_timestamps(bdd_manager_t* bddm, term_t t, uint32_t bitsize, uint32_t* bdd_timestamp, uint32_t* value_timestamp) {
 
   term_table_t* terms = bddm->ctx->terms;
 
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
-    ctx_trace_printf(bddm->ctx, "bv_bdd_manager: recomputing timestamps for ");
+    ctx_trace_printf(bddm->ctx, "bdd_manager: recomputing timestamps for ");
     ctx_trace_term(bddm->ctx, t);
   }
 
   // Info for t
-  term_info_t* t_info = bv_bdd_manager_get_info(bddm, t);
+  term_info_t* t_info = bdd_manager_get_info(bddm, t);
 
   // If visited already, skip
   int_hmap_pair_t* find = int_hmap_find(&bddm->visited, t);
@@ -522,7 +620,7 @@ bool bv_bdd_manager_recompute_timestamps(bv_bdd_manager_t* bddm, term_t t, uint3
 
   // Negation
   if (is_neg_term(t)) {
-    contains_unassigned = bv_bdd_manager_recompute_timestamps(bddm, unsigned_term(t), bitsize, bdd_timestamp, value_timestamp);
+    contains_unassigned = bdd_manager_recompute_timestamps(bddm, unsigned_term(t), bitsize, bdd_timestamp, value_timestamp);
   } else {
     term_kind_t t_kind = term_kind(terms, t);
     switch (t_kind) {
@@ -547,7 +645,7 @@ bool bv_bdd_manager_recompute_timestamps(bv_bdd_manager_t* bddm, term_t t, uint3
         uint32_t value_timestamp_i = 0;
         uint32_t t_i = t_comp->arg[i];
         uint32_t bitsize_i = bv_term_bitsize(terms, t_i);
-        bool t_i_contains_unassigned = bv_bdd_manager_recompute_timestamps(bddm, t_i, bitsize_i, &bdd_timestamp_i, &value_timestamp_i);
+        bool t_i_contains_unassigned = bdd_manager_recompute_timestamps(bddm, t_i, bitsize_i, &bdd_timestamp_i, &value_timestamp_i);
         contains_unassigned = contains_unassigned || t_i_contains_unassigned;
         if (bdd_timestamp_i > *bdd_timestamp) { *bdd_timestamp = bdd_timestamp_i; }
         if (value_timestamp_i > *value_timestamp) { *value_timestamp = value_timestamp_i; }
@@ -555,7 +653,7 @@ bool bv_bdd_manager_recompute_timestamps(bv_bdd_manager_t* bddm, term_t t, uint3
       break;
     }
     case BIT_TERM:
-      contains_unassigned = bv_bdd_manager_recompute_timestamps(bddm, bit_term_arg(terms, t), 1, bdd_timestamp, value_timestamp);
+      contains_unassigned = bdd_manager_recompute_timestamps(bddm, bit_term_arg(terms, t), 1, bdd_timestamp, value_timestamp);
       break;
     case BV_POLY: {
       bvpoly_t* t_poly = bvpoly_term_desc(terms, t);
@@ -565,7 +663,7 @@ bool bv_bdd_manager_recompute_timestamps(bv_bdd_manager_t* bddm, term_t t, uint3
         uint32_t value_timestamp_i = 0;
         term_t t_i = t_poly->mono[i].var;
         uint32_t bitsize_i = bv_term_bitsize(terms, t_i);
-        bool t_i_contains_unassigned = bv_bdd_manager_recompute_timestamps(bddm, t_i, bitsize_i, &bdd_timestamp_i, &value_timestamp_i);
+        bool t_i_contains_unassigned = bdd_manager_recompute_timestamps(bddm, t_i, bitsize_i, &bdd_timestamp_i, &value_timestamp_i);
         contains_unassigned = contains_unassigned || t_i_contains_unassigned;
         if (bdd_timestamp_i > *bdd_timestamp) { *bdd_timestamp = bdd_timestamp_i; }
         if (value_timestamp_i > *value_timestamp) { *value_timestamp = value_timestamp_i; }
@@ -581,7 +679,7 @@ bool bv_bdd_manager_recompute_timestamps(bv_bdd_manager_t* bddm, term_t t, uint3
         uint32_t value_timestamp_i = 0;
         term_t t_i = t_poly->mono[i].var;
         uint32_t bitsize_i = bv_term_bitsize(terms, t_i);
-        bool t_i_contains_unassigned = bv_bdd_manager_recompute_timestamps(bddm, t_i, bitsize_i, &bdd_timestamp_i, &value_timestamp_i);
+        bool t_i_contains_unassigned = bdd_manager_recompute_timestamps(bddm, t_i, bitsize_i, &bdd_timestamp_i, &value_timestamp_i);
         contains_unassigned = contains_unassigned || t_i_contains_unassigned;
         if (bdd_timestamp_i > *bdd_timestamp) { *bdd_timestamp = bdd_timestamp_i; }
         if (value_timestamp_i > *value_timestamp) { *value_timestamp = value_timestamp_i; }
@@ -595,7 +693,7 @@ bool bv_bdd_manager_recompute_timestamps(bv_bdd_manager_t* bddm, term_t t, uint3
         uint32_t value_timestamp_i = 0;
         term_t t_i = t_pprod->prod[i].var;
         uint32_t bitsize_i = bv_term_bitsize(terms, t_i);
-        bool t_i_contains_unassigned = bv_bdd_manager_recompute_timestamps(bddm, t_i, bitsize_i, &bdd_timestamp_i, &value_timestamp_i);
+        bool t_i_contains_unassigned = bdd_manager_recompute_timestamps(bddm, t_i, bitsize_i, &bdd_timestamp_i, &value_timestamp_i);
         contains_unassigned = contains_unassigned || t_i_contains_unassigned;
         if (bdd_timestamp_i > *bdd_timestamp) { *bdd_timestamp = bdd_timestamp_i; }
         if (value_timestamp_i > *value_timestamp) { *value_timestamp = value_timestamp_i; }
@@ -638,8 +736,8 @@ bool bv_bdd_manager_recompute_timestamps(bv_bdd_manager_t* bddm, term_t t, uint3
 }
 
 static inline
-bvconstant_t* bv_bdd_manager_get_value(bv_bdd_manager_t* bddm, term_t t) {
-  term_info_t* t_info = bv_bdd_manager_get_info(bddm, t);
+bvconstant_t* bdd_manager_get_value(bdd_manager_t* bddm, term_t t) {
+  term_info_t* t_info = bdd_manager_get_info(bddm, t);
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
     ctx_trace_printf(bddm->ctx, "value of ");
     ctx_trace_term(bddm->ctx, t);
@@ -651,10 +749,10 @@ bvconstant_t* bv_bdd_manager_get_value(bv_bdd_manager_t* bddm, term_t t) {
 }
 
 static inline
-void bv_bdd_manager_compute_value(bv_bdd_manager_t* bddm, term_t t) {
+void bdd_manager_compute_value(bdd_manager_t* bddm, term_t t) {
 
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
-    ctx_trace_printf(bddm->ctx, "bv_bdd_manager: computing value for ");
+    ctx_trace_printf(bddm->ctx, "bdd_manager: computing value for ");
     ctx_trace_term(bddm->ctx, t);
   }
 
@@ -669,7 +767,7 @@ void bv_bdd_manager_compute_value(bv_bdd_manager_t* bddm, term_t t) {
   // Negation
   if (is_neg_term(t)) {
     t_i = unsigned_term(t);
-    value_i = bv_bdd_manager_get_value(bddm, t_i);
+    value_i = bdd_manager_get_value(bddm, t_i);
     pvector_push(&children_values, value_i);
   } else {
     term_kind_t t_kind = term_kind(terms, t);
@@ -692,14 +790,14 @@ void bv_bdd_manager_compute_value(bv_bdd_manager_t* bddm, term_t t) {
       composite_term_t* t_comp = composite_term_desc(terms, t);
       for (i = 0; i < t_comp->arity; ++i) {
         t_i = t_comp->arg[i];
-        value_i = bv_bdd_manager_get_value(bddm, t_i);
+        value_i = bdd_manager_get_value(bddm, t_i);
         pvector_push(&children_values, value_i);
       }
       break;
     }
     case BIT_TERM:
       t_i = bit_term_arg(terms, t);
-      value_i = bv_bdd_manager_get_value(bddm, t_i);
+      value_i = bdd_manager_get_value(bddm, t_i);
       pvector_push(&children_values, value_i);
       break;
     case BV_POLY: {
@@ -707,7 +805,7 @@ void bv_bdd_manager_compute_value(bv_bdd_manager_t* bddm, term_t t) {
       for (uint32_t i = 0; i < t_poly->nterms; ++i) {
         if (t_poly->mono[i].var == const_idx) continue;
         t_i = t_poly->mono[i].var;
-        value_i = bv_bdd_manager_get_value(bddm, t_i);
+        value_i = bdd_manager_get_value(bddm, t_i);
         pvector_push(&children_values, value_i);
       }
       break;
@@ -718,7 +816,7 @@ void bv_bdd_manager_compute_value(bv_bdd_manager_t* bddm, term_t t) {
       for (uint32_t i = 0; i < t_poly->nterms; ++i) {
         if (t_poly->mono[i].var == const_idx) continue;
         t_i = t_poly->mono[i].var;
-        value_i = bv_bdd_manager_get_value(bddm, t_i);
+        value_i = bdd_manager_get_value(bddm, t_i);
         pvector_push(&children_values, value_i);
       }
       break;
@@ -727,7 +825,7 @@ void bv_bdd_manager_compute_value(bv_bdd_manager_t* bddm, term_t t) {
       pprod_t* t_pprod = pprod_term_desc(terms, t);
       for (uint32_t i = 0; i < t_pprod->len; ++ i) {
         term_t t_i = t_pprod->prod[i].var;
-        value_i = bv_bdd_manager_get_value(bddm, t_i);
+        value_i = bdd_manager_get_value(bddm, t_i);
         pvector_push(&children_values, value_i);
       }
       break;
@@ -739,11 +837,11 @@ void bv_bdd_manager_compute_value(bv_bdd_manager_t* bddm, term_t t) {
   }
 
   // We have the children values compute
-  term_info_t* t_info = bv_bdd_manager_get_info(bddm, t);
+  term_info_t* t_info = bdd_manager_get_info(bddm, t);
   bv_term_compute_value(terms, t, (bvconstant_t**) children_values.data, &t_info->value);
 
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
-    ctx_trace_printf(bddm->ctx, "bv_bdd_manager: new value for ");
+    ctx_trace_printf(bddm->ctx, "bdd_manager: new value for ");
     ctx_trace_term(bddm->ctx, t);
     ctx_trace_printf(bddm->ctx, "value = ");
     bvconst_print(ctx_trace_out(bddm->ctx), t_info->value.data, t_info->value.bitsize);
@@ -755,10 +853,10 @@ void bv_bdd_manager_compute_value(bv_bdd_manager_t* bddm, term_t t) {
 }
 
 static inline
-void bv_bdd_manager_compute_bdd(bv_bdd_manager_t* bddm, term_t t) {
+void bdd_manager_compute_bdd(bdd_manager_t* bddm, term_t t) {
 
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
-    ctx_trace_printf(bddm->ctx, "bv_bdd_manager: computing BDD for ");
+    ctx_trace_printf(bddm->ctx, "bdd_manager: computing BDD for ");
     ctx_trace_term(bddm->ctx, t);
     ctx_trace_printf(bddm->ctx, "unassigned variable: ");
     ctx_trace_term(bddm->ctx, bddm->unassigned_var);
@@ -768,24 +866,24 @@ void bv_bdd_manager_compute_bdd(bv_bdd_manager_t* bddm, term_t t) {
   term_t t_i;
   BDD** bdds_i;
   term_table_t* terms = bddm->ctx->terms;
-  CUDD* cudd = bddm->cudd;
 
   // We store children BDD pointers here
   pvector_t children_bdds;
   init_pvector(&children_bdds, 0);
 
   // Term data
-  term_info_t* t_info = bv_bdd_manager_get_info(bddm, t);
-  BDD** t_bdds = bv_bdd_manager_get_bdds_from_info(bddm, t_info);
-
-  // Remove all previous BDDs
+  term_info_t* t_info = bdd_manager_get_info(bddm, t);
   uint32_t bitsize = bv_term_bitsize(terms, t);
-  bdds_clear(cudd, t_bdds, bitsize);
+
+  // Remove all previous BDDs and make a new ones
+  bdd_manager_delete_vec(bddm, t_info->v);
+  t_info->v = bddvec_manager_new_vec(&bddm->bdds, bitsize);
+  BDD** t_bdds = bddvec_manager_get_bdds(&bddm->bdds, t_info->v);
 
   // Negation
   if (is_neg_term(t)) {
     t_i = unsigned_term(t);
-    bdds_i = bv_bdd_manager_get_bdds(bddm, t_i);
+    bdds_i = bdd_manager_get_bdds(bddm, t_i);
     pvector_push(&children_bdds, bdds_i);
   } else {
     term_kind_t t_kind = term_kind(terms, t);
@@ -810,14 +908,14 @@ void bv_bdd_manager_compute_bdd(bv_bdd_manager_t* bddm, term_t t) {
       composite_term_t* t_comp = composite_term_desc(terms, t);
       for (i = 0; i < t_comp->arity; ++i) {
         t_i = t_comp->arg[i];
-        bdds_i = bv_bdd_manager_get_bdds(bddm, t_i);
+        bdds_i = bdd_manager_get_bdds(bddm, t_i);
         pvector_push(&children_bdds, bdds_i);
       }
       break;
     }
     case BIT_TERM:
       t_i = bit_term_arg(terms, t);
-      bdds_i = bv_bdd_manager_get_bdds(bddm, t_i);
+      bdds_i = bdd_manager_get_bdds(bddm, t_i);
       pvector_push(&children_bdds, bdds_i);
       break;
     case BV_POLY: {
@@ -825,7 +923,7 @@ void bv_bdd_manager_compute_bdd(bv_bdd_manager_t* bddm, term_t t) {
       for (uint32_t i = 0; i < t_poly->nterms; ++i) {
         if (t_poly->mono[i].var == const_idx) continue;
         t_i = t_poly->mono[i].var;
-        bdds_i = bv_bdd_manager_get_bdds(bddm, t_i);
+        bdds_i = bdd_manager_get_bdds(bddm, t_i);
         pvector_push(&children_bdds, bdds_i);
       }
       break;
@@ -836,7 +934,7 @@ void bv_bdd_manager_compute_bdd(bv_bdd_manager_t* bddm, term_t t) {
       for (uint32_t i = 0; i < t_poly->nterms; ++i) {
         if (t_poly->mono[i].var == const_idx) continue;
         t_i = t_poly->mono[i].var;
-        bdds_i = bv_bdd_manager_get_bdds(bddm, t_i);
+        bdds_i = bdd_manager_get_bdds(bddm, t_i);
         pvector_push(&children_bdds, bdds_i);
       }
       break;
@@ -845,7 +943,7 @@ void bv_bdd_manager_compute_bdd(bv_bdd_manager_t* bddm, term_t t) {
       pprod_t* t_pprod = pprod_term_desc(terms, t);
       for (uint32_t i = 0; i < t_pprod->len; ++ i) {
         t_i = t_pprod->prod[i].var;
-        bdds_i = bv_bdd_manager_get_bdds(bddm, t_i);
+        bdds_i = bdd_manager_get_bdds(bddm, t_i);
         pvector_push(&children_bdds, bdds_i);
       }
       break;
@@ -856,45 +954,20 @@ void bv_bdd_manager_compute_bdd(bv_bdd_manager_t* bddm, term_t t) {
     }
   }
 
-  if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
-//    FILE* out = ctx_trace_out(bddm->ctx);
-//    ctx_trace_printf(bddm->ctx, "bv_bdd_manager: computing BDDs ");
-//    ctx_trace_term(bddm->ctx, t);
-//    ctx_trace_printf(bddm->ctx, "unassigned variable: ");
-//    ctx_trace_term(bddm->ctx, bddm->unassigned_var);
-//    ctx_trace_printf(bddm->ctx, "x BDDs: ");
-//    term_info_t* x_info = bv_bdd_manager_get_info(bddm, bddm->unassigned_var);
-//    BDD** x_bdds = bv_bdd_manager_get_bdds_from_info(bddm, x_info);
-//    bdds_print(bddm->cudd, x_bdds, x_info->value.bitsize, out);
-//    for (int i = 0; i < children_bdds.size; ++ i) {
-//      ctx_trace_printf(bddm->ctx, "\nchildren[%d] BDDs: ", i);
-//      bdds_print(bddm->cudd, children_bdds.data[i], bitsize, out);
-//      ctx_trace_printf(bddm->ctx, "\n");
-//    }
-  }
-
   // We have the children values compute
   bdds_compute_bdds(bddm->cudd, terms, t, &children_bdds, t_bdds);
 
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
-    ctx_trace_printf(bddm->ctx, "bv_bdd_manager: BDD done for ");
+    ctx_trace_printf(bddm->ctx, "bdd_manager: BDD done for ");
     ctx_trace_term(bddm->ctx, t);
-//    ctx_trace_printf(bddm->ctx, "unassigned variable: ");
-//    ctx_trace_term(bddm->ctx, bddm->unassigned_var);
-//    ctx_trace_printf(bddm->ctx, "x BDDs: ");
-//    term_info_t* x_info = bv_bdd_manager_get_info(bddm, bddm->unassigned_var);
-//    BDD** x_bdds = bv_bdd_manager_get_bdds_from_info(bddm, x_info);
-//    bdds_print(bddm->cudd, x_bdds, x_info->value.bitsize, ctx_trace_out(bddm->ctx));
-//    ctx_trace_printf(bddm->ctx, "\nt BDDs: ");
-//    bdds_print(bddm->cudd, t_bdds, bitsize, ctx_trace_out(bddm->ctx));
-//    ctx_trace_printf(bddm->ctx, "\n");
   }
 
   // Remove temp
   delete_pvector(&children_bdds);
 }
 
-BDD** bv_bdd_manager_get_term_bdds(bv_bdd_manager_t* bddm, term_t t, uint32_t bitsize) {
+static
+bddvec_t bdd_manager_get_term_bdds(bdd_manager_t* bddm, term_t t, uint32_t bitsize) {
 
   uint32_t i;
   term_t t_recompute;
@@ -904,25 +977,25 @@ BDD** bv_bdd_manager_get_term_bdds(bv_bdd_manager_t* bddm, term_t t, uint32_t bi
   assert(bddm->value_recompute.size == 0);
 
   // Make sure we have allocated the data for t
-  bv_bdd_manager_ensure_term_data(bddm, t, bitsize);
+  bdd_manager_ensure_term_data(bddm, t, bitsize);
 
   // Recompute timestamps
   uint32_t bdd_timestamp = 0, value_timestamp = 0;
-  bool contains_unassigned = bv_bdd_manager_recompute_timestamps(bddm, t, bitsize, &bdd_timestamp, &value_timestamp);
+  bool contains_unassigned = bdd_manager_recompute_timestamps(bddm, t, bitsize, &bdd_timestamp, &value_timestamp);
   (void) contains_unassigned;
   assert(contains_unassigned);
 
   // Recompute needed values
   for (i = 0; i < bddm->value_recompute.size; ++ i) {
     t_recompute = bddm->value_recompute.data[i];
-    bv_bdd_manager_compute_value(bddm, t_recompute);
+    bdd_manager_compute_value(bddm, t_recompute);
   }
 
   // Recompute needed BDDs
   for (i = 0; i < bddm->bdd_recompute.size; ++ i) {
     assert(i == 0 || t_recompute != bddm->bdd_recompute.data[i]);
     t_recompute = bddm->bdd_recompute.data[i];
-    bv_bdd_manager_compute_bdd(bddm, t_recompute);
+    bdd_manager_compute_bdd(bddm, t_recompute);
   }
 
   // Clear the cache
@@ -930,22 +1003,21 @@ BDD** bv_bdd_manager_get_term_bdds(bv_bdd_manager_t* bddm, term_t t, uint32_t bi
   ivector_reset(&bddm->bdd_recompute);
   ivector_reset(&bddm->value_recompute);
 
-  term_info_t* t_info = bv_bdd_manager_get_info(bddm, t);
-  BDD** t_bdds = bv_bdd_manager_get_bdds_from_info(bddm, t_info);
+  term_info_t* t_info = bdd_manager_get_info(bddm, t);
 
   // Return the BDDs
-  return t_bdds;
+  return t_info->v;
 }
 
-void bv_bdd_manager_set_bv_value(bv_bdd_manager_t* bddm, term_t t, const bvconstant_t* value) {
+void bdd_manager_set_bv_value(bdd_manager_t* bddm, term_t t, const bvconstant_t* value) {
   assert(bv_term_get_type(bddm->ctx->terms, t) == BV_TERM_VARIABLE);
   assert(bv_term_bitsize(bddm->ctx->terms, t) == value->bitsize);
 
-  term_info_t* t_info = bv_bdd_manager_get_info(bddm, t);
+  term_info_t* t_info = bdd_manager_get_info(bddm, t);
   assert(t_info->value.bitsize == value->bitsize);
 
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
-    ctx_trace_printf(bddm->ctx, "bv_bdd_manager: setting bit value for ");
+    ctx_trace_printf(bddm->ctx, "bdd_manager: setting bit value for ");
     ctx_trace_term(bddm->ctx, t);
     ctx_trace_printf(bddm->ctx, "value = ");
     bvconst_print(ctx_trace_out(bddm->ctx), value->data, value->bitsize);
@@ -966,14 +1038,14 @@ void bv_bdd_manager_set_bv_value(bv_bdd_manager_t* bddm, term_t t, const bvconst
   }
 }
 
-void bv_bdd_manager_set_bool_value(bv_bdd_manager_t* bddm, term_t t, bool value) {
+void bdd_manager_set_bool_value(bdd_manager_t* bddm, term_t t, bool value) {
   assert(bv_term_get_type(bddm->ctx->terms, t) == BV_TERM_VARIABLE);
   assert(bv_term_bitsize(bddm->ctx->terms, t) == 1);
 
-  term_info_t* t_info = bv_bdd_manager_get_info(bddm, t);
+  term_info_t* t_info = bdd_manager_get_info(bddm, t);
 
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
-    ctx_trace_printf(bddm->ctx, "bv_bdd_manager: setting bit value for ");
+    ctx_trace_printf(bddm->ctx, "bdd_manager: setting bit value for ");
     ctx_trace_term(bddm->ctx, t);
     ctx_trace_printf(bddm->ctx, "value = %s\n", (value ? "true" : "false"));
     ctx_trace_printf(bddm->ctx, "old_value = ");
@@ -999,12 +1071,10 @@ void bv_bdd_manager_set_bool_value(bv_bdd_manager_t* bddm, term_t t, bool value)
   }
 }
 
-bdd_t bv_bdd_manager_get_bdd(bv_bdd_manager_t* bddm, term_t t, term_t x) {
-
-  bdd_t result = bdd_null;
+bddvec_t bdd_manager_get(bdd_manager_t* bddm, term_t t, term_t x) {
 
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
-    ctx_trace_printf(bddm->ctx, "bv_bdd_manager: creating BDD for ");
+    ctx_trace_printf(bddm->ctx, "bdd_manager: creating BDD for ");
     ctx_trace_term(bddm->ctx, t);
     ctx_trace_printf(bddm->ctx, "unit in variable ");
     ctx_trace_term(bddm->ctx, x);
@@ -1016,104 +1086,235 @@ bdd_t bv_bdd_manager_get_bdd(bv_bdd_manager_t* bddm, term_t t, term_t x) {
 
   // Compute
   assert(is_boolean_term(bddm->ctx->terms, t));
-  BDD** t_bdds = bv_bdd_manager_get_term_bdds(bddm, t, 1);
-  result.bdd[0] = t_bdds[0];
+  bddvec_t result = bdd_manager_get_term_bdds(bddm, t, 1);
 
   // Unset the unit variable
   bddm->unassigned_var = NULL_TERM;
 
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
-    ctx_trace_printf(bddm->ctx, "bv_bdd_manager: BDD for ");
+    ctx_trace_printf(bddm->ctx, "bdd_manager: BDD for ");
     ctx_trace_term(bddm->ctx, t);
     ctx_trace_printf(bddm->ctx, "unit in variable ");
     ctx_trace_term(bddm->ctx, x);
-    bv_bdd_manager_bdd_print(bddm, result, ctx_trace_out(bddm->ctx));
+    bdd_manager_print_bddvec(bddm, result, ctx_trace_out(bddm->ctx));
     ctx_trace_printf(bddm->ctx, "\n");
   }
 
   return result;
 }
 
-bv_bdd_t bv_bdd_manager_get_bv_bdd(bv_bdd_manager_t* bddm, term_t t, term_t x) {
+void bdd_manager_detach(bdd_manager_t* bddm, bddvec_t v) {
+  if (v.id == bddvec_null_id) return;
+  BDD** v_bdds = bddvec_manager_get_bdds(&bddm->bdds, v);
+  bdds_detach(bddm->cudd, v_bdds, v.size);
+}
 
-  if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
-    ctx_trace_printf(bddm->ctx, "creating BDD for ");
-    ctx_trace_term(bddm->ctx, t);
-    ctx_trace_printf(bddm->ctx, " in variable");
-    ctx_trace_term(bddm->ctx, x);
+void bdd_manager_delete_vec(bdd_manager_t* bddm, bddvec_t v) {
+  if (v.id == bddvec_null_id) return;
+  BDD** v_bdds = bddvec_manager_get_bdds(&bddm->bdds, v);
+  bdds_clear(bddm->cudd, v_bdds, v.size);
+  bddvec_manager_delete_vec(&bddm->bdds, v);
+}
+
+bddvec_t bdd_manager_new_copy(bdd_manager_t* bddm, bddvec_t v) {
+  if (v.id == bddvec_null_id) return v;
+  bddvec_t result = bddvec_manager_new_vec(&bddm->bdds, v.size);
+  BDD** v_bdds = bddvec_manager_get_bdds(&bddm->bdds, v);
+  BDD** result_bdds = bddvec_manager_get_bdds(&bddm->bdds, result);
+  for (uint32_t i = 0; i < v.size; ++ i) {
+    result_bdds[i] = v_bdds[i];
   }
-
-  // Set the unit variable
-  assert(bddm->unassigned_var == NULL_TERM);
-  bddm->unassigned_var = x;
-
-  assert(is_bitvector_term(bddm->ctx->terms, t));
-
-  bv_bdd_t result = bv_bdd_null;
-  uint32_t t_bitsize = bv_term_bitsize(bddm->ctx->terms, t);
-  BDD** t_bdds = bv_bdd_manager_get_term_bdds(bddm, t, t_bitsize);
-  result.bdds = (void**) t_bdds;
-
-  // Unset the unit variable
-  bddm->unassigned_var = NULL_TERM;
-
+  bdds_attach(result_bdds, v.size);
   return result;
 }
 
-void bv_bdd_manager_bdd_detach(bv_bdd_manager_t* bddm, bdd_t bdd) {
-  bdds_clear(bddm->cudd, (BDD**) bdd.bdd, 1);
+void bdd_manager_attach(bdd_manager_t* bddm, bddvec_t v) {
+  if (v.id == bddvec_null_id) return;
+  BDD** v_bdds = bddvec_manager_get_bdds(&bddm->bdds, v);
+  bdds_attach(v_bdds, v.size);
 }
 
-void bv_bdd_manager_bdd_attach(bv_bdd_manager_t* bddm, bdd_t bdd) {
-  bdds_attach((BDD**) bdd.bdd, 1);
+void bdd_manager_bdd_print(const bdd_manager_t* bddm, BDD* bdd, FILE* out) {
+  bdds_print(bddm->cudd, &bdd, 1, out);
 }
 
-void bv_bdd_manager_bdd_print(const bv_bdd_manager_t* bddm, bdd_t bdd, FILE* out) {
-  bdds_print(bddm->cudd, (BDD**) bdd.bdd, 1, out);
+void bdd_manager_print_bddvec(const bdd_manager_t* bddm, bddvec_t v, FILE* out) {
+  BDD** bdds = bddvec_manager_get_bdds(&bddm->bdds, v);
+  bdds_print(bddm->cudd, bdds, v.size, out);
 }
 
-bool bv_bdd_manager_bdd_is_empty(const bv_bdd_manager_t* bddm, bdd_t bdd) {
+bool bdd_manager_is_empty(const bdd_manager_t* bddm, bddvec_t v) {
   // Check that BDD != false, i.e., there is an assignment so that it is true
-  assert(bdd.bdd[0] != NULL);
-  return bdd.bdd[0] == bddm->bdd_false;
+  assert(v.id != bddvec_null_id);
+  BDD** v_bdds = bddvec_manager_get_bdds(&bddm->bdds, v);
+  if (v.size == 1 && v_bdds[0] == bddm->bdd_false) {
+    return true;
+  }
+  return false;
 }
 
-bool bv_bdd_manager_bdd_is_point(const bv_bdd_manager_t* bddm, bdd_t bdd, uint32_t bitsize) {
+bool bdd_manager_is_point(const bdd_manager_t* bddm, bddvec_t v, uint32_t bitsize) {
 
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
-    ctx_trace_printf(bddm->ctx, "bv_bdd_manager: checking if point: ");
-    bdds_print(bddm->cudd, (BDD**) bdd.bdd, 1, ctx_trace_out(bddm->ctx));
+    ctx_trace_printf(bddm->ctx, "bdd_manager: checking if point of size %d: ", bitsize);
+    bdd_manager_print_bddvec(bddm, v, ctx_trace_out(bddm->ctx));
     ctx_trace_printf(bddm->ctx, "\n");
   }
 
   // Check if BDD is a point: has to be a cube
-  return bdds_is_point(bddm->cudd, (BDD*) bdd.bdd[0], bitsize);
+  BDD** v_bdds = bddvec_manager_get_bdds(&bddm->bdds, v);
+  bool result =  bdds_is_point(bddm->cudd, v_bdds, v.size, bitsize);
+
+  if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
+    ctx_trace_printf(bddm->ctx, result ? "yes\n" : "no\n");
+  }
+
+  return result;
 }
 
-bdd_t bv_bdd_manager_bdd_intersect(bv_bdd_manager_t* bddm, bdd_t bdd1, bdd_t bdd2) {
-  assert(bdd1.bdd[0] != NULL);
-  assert(bdd2.bdd[0] != NULL);
-  bdd_t bdd = { { NULL } };
-  bdds_mk_and(bddm->cudd, (BDD**) bdd.bdd, (BDD**) bdd1.bdd, (BDD**) &bdd2.bdd, 1);
-  return bdd;
+/**
+ * We're intersecting two vectors of BDDs. Each element of the vector is over
+ * disjoint variables in v1 and v2.
+ *
+ * Inputs are attached BDDs.
+ * Return value is always freshly allocated attached.
+ */
+bddvec_t bdd_manager_intersect(bdd_manager_t* bddm, bddvec_t v1, bddvec_t v2) {
+
+  uint32_t i, j;
+
+//  static int count = 0;
+//  count ++;
+//  if (count == 11) {
+//    fprintf(stderr, "here\n");
+//  }
+
+  CUDD* cudd = bddm->cudd;
+  bool done = false;
+
+  pvector_t output_bdds;
+  init_pvector(&output_bdds, 0);
+
+  // Just copy over v1 BDDs (and attach, we're copying)
+  BDD** v1_bdds = bddvec_manager_get_bdds(&bddm->bdds, v1);
+  for (i = 0; !done && i < v1.size; ++ i) {
+    BDD* bdd = v1_bdds[i];
+    if (bdd == bddm->bdd_false) {
+      assert(v1.size == 1);
+      done = true;
+    }
+    if (bdd == bddm->bdd_true) {
+      continue;
+    }
+    pvector_push(&output_bdds, bdd);
+  }
+  bdds_attach((BDD**) output_bdds.data, output_bdds.size);
+
+  // Now add the v2 BDDs. For each v2 BDD go through output_bdds and
+  // see if they are disjoint. If yes, then we skip it. If not we need
+  // to intersect it and continue with the intersection.
+  BDD** v2_bdds = bddvec_manager_get_bdds(&bddm->bdds, v2);
+  for (i = 0; !done && i < v2.size; ++ i) {
+    BDD* to_add = v2_bdds[i];
+    if (to_add == bddm->bdd_true) {
+      // No need to add true
+      j ++;
+      continue;
+    }
+    bdds_attach(&to_add, 1); // attach, we're copying
+    if (to_add == bddm->bdd_false) {
+      // intersecting with false, just return false
+      bdds_clear(cudd, (BDD**) output_bdds.data, output_bdds.size);
+      pvector_reset(&output_bdds);
+      done = true;
+    } else {
+      for (j = 0; !done && j < output_bdds.size;) {
+        // The BDD to_add is disjoint from all BDDs at positions < j
+        BDD* current = (BDD*) output_bdds.data[j];
+        if (bdds_are_disjoint(cudd, to_add, current)) {
+          // Disjoint, we can continue
+          j ++;
+          continue;
+        }
+        // Not disjoint, we intersect with the current one and keep going with
+        // the intersection
+        BDD* conjunction = NULL;
+        bdds_mk_and(cudd, &conjunction, &current, &to_add, 1);
+        // result one now becomes current
+        bdds_clear(cudd, &to_add, 1);
+        to_add = conjunction;
+        if (to_add == bddm->bdd_false) {
+          // just return the false BDD
+          bdds_clear(cudd, (BDD**) output_bdds.data, output_bdds.size);
+          pvector_reset(&output_bdds);
+          done = true;
+        } else if (j + 1 < output_bdds.size) {
+          // shrink the vector by moving the last one into position
+          bdds_clear(cudd, &current, 1);
+          output_bdds.data[j] = pvector_pop2(&output_bdds);
+        } else {
+          // no more, just replace the current one
+          bdds_clear(cudd, &current, 1);
+          pvector_pop2(&output_bdds);
+          done = true;
+        }
+      }
+    }
+    pvector_push(&output_bdds, to_add);
+  }
+
+  // Allocate the BDD vector and copy over the BDDs
+  if (output_bdds.size == 0) {
+    pvector_push(&output_bdds, bddm->bdd_true);
+    bdds_attach(&bddm->bdd_true, 1);
+  }
+  bddvec_t result = bddvec_manager_new_vec(&bddm->bdds, output_bdds.size);
+  BDD** result_bdds = bddvec_manager_get_bdds(&bddm->bdds, result);
+  for (i = 0; i < output_bdds.size; ++ i) {
+    assert(output_bdds.data[i] != NULL);
+    result_bdds[i] = output_bdds.data[i];
+  }
+
+  if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd::intersect")) {
+    ctx_trace_printf(bddm->ctx, "intersect result:\n");
+    bdds_print(bddm->cudd, (BDD**) output_bdds.data, output_bdds.size, ctx_trace_out(bddm->ctx));
+    ctx_trace_printf(bddm->ctx, "\n");
+  }
+
+  // Remove temp
+  delete_pvector(&output_bdds);
+
+  return result;
 }
 
-void bv_bdd_manager_pick_value(bv_bdd_manager_t* bddm, term_t x, bdd_t bdd, bvconstant_t* out) {
-  term_info_t* x_info = bv_bdd_manager_get_info(bddm, x);
+void bdd_manager_pick_value(bdd_manager_t* bddm, term_t x, bddvec_t v, bvconstant_t* out) {
+  term_info_t* x_info = bdd_manager_get_info(bddm, x);
   const bvconstant_t* prev_value = &x_info->value;
-  BDD** x_bdds = bv_bdd_manager_get_bdds_from_info(bddm, x_info);
+  BDD** x_bdds = bddvec_manager_get_bdds(&bddm->bdds, x_info->v);
   assert(out->bitsize == prev_value->bitsize);
-  if (bdds_is_model(bddm->cudd, x_bdds, (BDD*) bdd.bdd[0], prev_value)) {
+  if (bdd_manager_is_model(bddm, x, v, prev_value)) {
     // If cached value works, just use it
     bvconstant_copy(out, out->bitsize, prev_value->data);
   } else {
-    bdds_get_model(bddm->cudd, x_bdds, (BDD*) bdd.bdd[0], out);
+    // Otherwise, get individual model segments
+    uint32_t i;
+    BDD** v_bdds = bddvec_manager_get_bdds(&bddm->bdds, v);
+    bvconstant_set_all_zero(out, out->bitsize);
+    for (i = 0; i < v.size; ++ i) {
+      bdds_get_model(bddm->cudd, x_bdds, v_bdds[i], out);
+    }
   }
 }
 
-bool bv_bdd_manager_is_model(bv_bdd_manager_t* bddm, term_t x, bdd_t bdd, const bvconstant_t* x_value) {
-  term_info_t* x_info = bv_bdd_manager_get_info(bddm, x);
-  BDD** x_bdds = bv_bdd_manager_get_bdds_from_info(bddm, x_info);
-  return bdds_is_model(bddm->cudd, x_bdds, (BDD*) bdd.bdd[0], x_value);
+bool bdd_manager_is_model(bdd_manager_t* bddm, term_t x, bddvec_t v, const bvconstant_t* x_value) {
+  uint32_t i;
+  term_info_t* x_info = bdd_manager_get_info(bddm, x);
+  BDD** x_bdds = bddvec_manager_get_bdds(&bddm->bdds, x_info->v);
+  BDD** v_bdds = bddvec_manager_get_bdds(&bddm->bdds, v);
+  for (i = 0; i < v.size; ++ i) {
+    if (!bdds_is_model(bddm->cudd, x_bdds, v_bdds[i], x_value))
+      return false;
+  }
+  return true;
 }
 

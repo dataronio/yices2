@@ -16,8 +16,8 @@
  * along with Yices.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <mcsat/bv/bdd_manager.h>
 #include "bv_feasible_set_db.h"
-#include "bv_bdd_manager.h"
 #include "bv_utils.h"
 
 #include "mcsat/utils/scope_holder.h"
@@ -30,16 +30,24 @@
  * the new feasible set.
  */
 typedef struct {
+
   /** Next element */
   uint32_t prev;
   /** Reasons for the update, if one then constraint, otherwise disjunction */
   variable_t* reasons;
   /** Size of the reasons */
   uint32_t reasons_size;
-  /** The new total feasible set (i.e. feasible set of all asserted constraints) */
-  bdd_t feasible_set;
-  /** The feasible set of the reason (feasible = feasible intersect this) */
-  bdd_t reason_feasible_set;
+
+  /**
+   * The new total feasible set (i.e. feasible set of all asserted constraints).
+   * This one we manage, so we allocate and delete.
+   */
+  bddvec_t feasible_set;
+
+  /**
+   * The feasible set of the reason (feasible = feasible intersect this).
+   * This is managed somewhere else, we just keep a copy. */
+  bddvec_t reason_feasible_set;
 
 } feasibility_list_element_t;
 
@@ -82,7 +90,7 @@ struct bv_feasible_set_db_s {
   plugin_context_t* ctx;
 
   /** BDD Manager */
-  bv_bdd_manager_t* bddm;
+  bdd_manager_t* bddm;
 
 };
 
@@ -107,9 +115,9 @@ void bv_feasible_set_db_print_var(const bv_feasible_set_db_t* db, variable_t var
   while (index != 0) {
     feasibility_list_element_t* current = db->memory + index;
     fprintf(out, "\t");
-    bv_bdd_manager_bdd_print(db->bddm, current->feasible_set, out);
+    bdd_manager_print_bddvec(db->bddm, current->feasible_set, out);
     fprintf(out, "\n\t\t");
-    bv_bdd_manager_bdd_print(db->bddm, current->reason_feasible_set, out);
+    bdd_manager_print_bddvec(db->bddm, current->reason_feasible_set, out);
     fprintf(out, "\n");
     if (current->reasons_size > 1) {
       fprintf(out, "\t\tDue to lemma\n");
@@ -145,9 +153,9 @@ void bv_feasible_set_db_print(const bv_feasible_set_db_t* db, FILE* out) {
     while (index != 0) {
       feasibility_list_element_t* current = db->memory + index;
       fprintf(out, "\t");
-      bv_bdd_manager_bdd_print(db->bddm, current->feasible_set, out);
+      bdd_manager_print_bddvec(db->bddm, current->feasible_set, out);
       fprintf(out, "\n\t\t");
-      bv_bdd_manager_bdd_print(db->bddm, current->reason_feasible_set, out);
+      bdd_manager_print_bddvec(db->bddm, current->reason_feasible_set, out);
       fprintf(out, "\n");
       index = current->prev;
     }
@@ -156,7 +164,7 @@ void bv_feasible_set_db_print(const bv_feasible_set_db_t* db, FILE* out) {
 
 #define INITIAL_DB_SIZE 100
 
-bv_feasible_set_db_t* bv_feasible_set_db_new(plugin_context_t* ctx, bv_bdd_manager_t* bddm) {
+bv_feasible_set_db_t* bv_feasible_set_db_new(plugin_context_t* ctx, bdd_manager_t* bddm) {
 
   bv_feasible_set_db_t* db = safe_malloc(sizeof(bv_feasible_set_db_t));
 
@@ -185,10 +193,10 @@ void bv_feasible_set_db_delete(bv_feasible_set_db_t* db) {
   // Start from 1, 0 is special.
   for (i = 1; i < db->memory_size; ++ i) {
     safe_free(db->memory[i].reasons);
-    bdd_t s1 = db->memory[i].feasible_set;
-    bdd_t s2 = db->memory[i].reason_feasible_set;
-    bv_bdd_manager_bdd_detach(db->bddm, s1);
-    bv_bdd_manager_bdd_detach(db->bddm, s2);
+    bddvec_t s1 = db->memory[i].feasible_set;
+    bddvec_t s2 = db->memory[i].reason_feasible_set;
+    bdd_manager_detach(db->bddm, s1);
+    bdd_manager_detach(db->bddm, s2);
   }
   // Delete the other stuff
   mcsat_value_destruct(&db->tmp_value);
@@ -201,10 +209,10 @@ void bv_feasible_set_db_delete(bv_feasible_set_db_t* db) {
   safe_free(db);
 }
 
-bdd_t bv_feasible_set_db_get(const bv_feasible_set_db_t* db, variable_t x) {
+bddvec_t bv_feasible_set_db_get(const bv_feasible_set_db_t* db, variable_t x) {
   uint32_t index = bv_feasible_set_db_get_index(db, x);
   if (index == 0) {
-    return bdd_null;
+    return bddvec_null;
   } else {
     return db->memory[index].feasible_set;
   }
@@ -215,8 +223,8 @@ const mcsat_value_t* bv_feasible_set_db_pick_value(bv_feasible_set_db_t* db, var
   bool ok;
 
   // Get the feasible set
-  bdd_t x_feasible_bdd = bv_feasible_set_db_get(db, x);
-  bool x_feasible_full = x_feasible_bdd.bdd[0] == NULL;
+  bddvec_t x_feasible_bdd = bv_feasible_set_db_get(db, x);
+  bool x_feasible_full = x_feasible_bdd.id == bddvec_null_id;
 
   // Term for x
   term_t x_term = variable_db_get_term(db->ctx->var_db, x);
@@ -229,7 +237,7 @@ const mcsat_value_t* bv_feasible_set_db_pick_value(bv_feasible_set_db_t* db, var
     if (x_feasible_full) {
       return cached_value;
     } else {
-      ok = bv_bdd_manager_is_model(db->bddm, x_term, x_feasible_bdd, &cached_value->bv_value);
+      ok = bdd_manager_is_model(db->bddm, x_term, x_feasible_bdd, &cached_value->bv_value);
       if (ok) { return cached_value; }
     }
   }
@@ -242,30 +250,30 @@ const mcsat_value_t* bv_feasible_set_db_pick_value(bv_feasible_set_db_t* db, var
   // 1) Try 0
   bvconstant_set_all_zero(value, x_bitsize);
   if (x_feasible_full) { return &db->tmp_value; }
-  ok = bv_bdd_manager_is_model(db->bddm, x_term, x_feasible_bdd, value);
+  ok = bdd_manager_is_model(db->bddm, x_term, x_feasible_bdd, value);
   if (ok) { return &db->tmp_value; }
 
   // 2) Try 1
   bvconstant_set_one(value);
-  ok = bv_bdd_manager_is_model(db->bddm, x_term, x_feasible_bdd, value);
+  ok = bdd_manager_is_model(db->bddm, x_term, x_feasible_bdd, value);
   if (ok) { return &db->tmp_value; }
 
   // 3) Try -1
   bvconstant_set_all_one(value, x_bitsize);
-  ok = bv_bdd_manager_is_model(db->bddm, x_term, x_feasible_bdd, value);
+  ok = bdd_manager_is_model(db->bddm, x_term, x_feasible_bdd, value);
   if (ok) { return &db->tmp_value; }
 
   // Pick a value from the feasible set
-  bv_bdd_manager_pick_value(db->bddm, x_term, x_feasible_bdd, value);
+  bdd_manager_pick_value(db->bddm, x_term, x_feasible_bdd, value);
 
   // Return the constructed value
   return &db->tmp_value;
 }
 
-bool bv_feasible_set_db_update(bv_feasible_set_db_t* db, variable_t x, bdd_t new_set, variable_t* cstr_list, uint32_t cstr_count) {
+bool bv_feasible_set_db_update(bv_feasible_set_db_t* db, variable_t x, bddvec_t new_set, variable_t* cstr_list, uint32_t cstr_count) {
 
   assert(db->updates_size == db->updates.size);
-  bv_bdd_manager_t* bddm = db->bddm;
+  bdd_manager_t* bddm = db->bddm;
   bool feasible = true;
   term_table_t* terms = db->ctx->terms;
   variable_db_t* var_db = db->ctx->var_db;
@@ -276,42 +284,43 @@ bool bv_feasible_set_db_update(bv_feasible_set_db_t* db, variable_t x, bdd_t new
     fprintf(ctx_trace_out(db->ctx), "bv_feasible_set_db_update: before\n");
     bv_feasible_set_db_print(db, ctx_trace_out(db->ctx));
     fprintf(ctx_trace_out(db->ctx), "adding:");
-    bv_bdd_manager_bdd_print(bddm, new_set,  ctx_trace_out(db->ctx));
+    bdd_manager_print_bddvec(bddm, new_set,  ctx_trace_out(db->ctx));
     fprintf(ctx_trace_out(db->ctx), "\n");
   }
 
-  // The one we're adding
-  bdd_t intersect = new_set;
+  // The one we're adding (we keep a copy)
+  bddvec_t intersect = bddvec_null;
   // Intersect if something to intersect with
-  bdd_t old_set = bv_feasible_set_db_get(db, x);
+  bddvec_t old_set = bv_feasible_set_db_get(db, x);
 
   // Old and new set are managed outside
-  if (old_set.bdd[0] != NULL) {
+  if (old_set.id != bddvec_null_id) {
     if (ctx_trace_enabled(db->ctx, "bv::feasible_set_db")) {
       ctx_trace_printf(db->ctx, "bv_feasible_set_db_update()\n");
       ctx_trace_printf(db->ctx, "old_set = ");
-      bv_bdd_manager_bdd_print(bddm, old_set, ctx_trace_out(db->ctx));
+      bdd_manager_print_bddvec(bddm, old_set, ctx_trace_out(db->ctx));
       ctx_trace_printf(db->ctx, "\nnew_set = ");
-      bv_bdd_manager_bdd_print(bddm, new_set, ctx_trace_out(db->ctx));
+      bdd_manager_print_bddvec(bddm, new_set, ctx_trace_out(db->ctx));
       ctx_trace_printf(db->ctx, "\n");
     }
-    // Intersect with the precious one
-    assert(!bv_bdd_manager_bdd_is_empty(bddm, old_set));
-    intersect = bv_bdd_manager_bdd_intersect(bddm, old_set, new_set);
-    // If new set is the same, nothing to do
-    if (bdd_eq(intersect, old_set)) {
-      // Old set stays
-      bv_bdd_manager_bdd_detach(bddm, intersect);
-      return true;
-    }
+    // Intersect with the previous one
+    assert(!bdd_manager_is_empty(bddm, old_set));
+    intersect = bdd_manager_intersect(bddm, old_set, new_set);
+//  TODO: don't know how to check for equality when BDDs are conjunctions
+//    // If new set is the same, nothing to do
+//    if (bdd_eq(intersect, old_set)) {
+//      // Old set stays
+//      bdd_manager_bddvec_detach(bddm, intersect);
+//      return true;
+//    }
   } else {
     // intersect = new_set, we need to increase reference count for
     // the intersect
-    bv_bdd_manager_bdd_attach(bddm, intersect);
+    intersect = bdd_manager_new_copy(db->bddm, new_set);
   }
 
   // Are we feasible
-  feasible = !bv_bdd_manager_bdd_is_empty(bddm, intersect);
+  feasible = !bdd_manager_is_empty(bddm, intersect);
 
   // Get the previous
   uint32_t prev = bv_feasible_set_db_get_index(db, x);
@@ -328,7 +337,7 @@ bool bv_feasible_set_db_update(bv_feasible_set_db_t* db, variable_t x, bdd_t new
   feasibility_list_element_t* new_element = db->memory + new_index;
   new_element->feasible_set = intersect; // Intersect attached already
   new_element->reason_feasible_set = new_set;
-  bv_bdd_manager_bdd_attach(bddm, new_set); // One more reference
+  bdd_manager_attach(bddm, new_set); // One more reference
   new_element->prev = prev;
   // Reasons
   new_element->reasons_size = cstr_count;
@@ -350,7 +359,7 @@ bool bv_feasible_set_db_update(bv_feasible_set_db_t* db, variable_t x, bdd_t new
   assert(db->updates_size == db->updates.size);
 
   // If fixed, put into the fixed array
-  if (bv_bdd_manager_bdd_is_point(bddm, new_set, x_bitsize)) {
+  if (bdd_manager_is_point(bddm, new_set, x_bitsize)) {
     ivector_push(&db->fixed_variables, x);
     db->fixed_variable_size ++;
   }
@@ -380,7 +389,7 @@ void bv_feasible_set_db_pop(bv_feasible_set_db_t* db) {
     bv_feasible_set_db_print(db, ctx_trace_out(db->ctx));
   }
 
-  bv_bdd_manager_t* bddm = db->bddm;
+  bdd_manager_t* bddm = db->bddm;
 
   scope_holder_pop(&db->scope,
       &db->updates_size,
@@ -402,10 +411,8 @@ void bv_feasible_set_db_pop(bv_feasible_set_db_t* db) {
     feasibility_list_element_t* element = db->memory + db->memory_size;
     uint32_t prev = element->prev;
     // Release the BDDs
-    bdd_t s1 = element->feasible_set;
-    bdd_t s2 = element->reason_feasible_set;
-    bv_bdd_manager_bdd_detach(bddm, s1);
-    bv_bdd_manager_bdd_detach(bddm, s2);
+    bdd_manager_delete_vec(bddm, element->feasible_set);
+    bdd_manager_detach(bddm, element->reason_feasible_set);
     safe_free(element->reasons);
     // Redirect map to the previous one
     int_hmap_pair_t* find = int_hmap_find(&db->var_to_feasible_set_map, x);
@@ -432,20 +439,20 @@ void bv_feasible_set_get_reason_indices(const bv_feasible_set_db_t* db, variable
 }
 
 static
-void bv_feasible_set_quickxplain(const bv_feasible_set_db_t* db, bdd_t current, ivector_t* reasons, uint32_t begin, uint32_t end, ivector_t* out, bv_feasible_explain_mode_t mode, uint32_t bitsize) {
+void bv_feasible_set_quickxplain(const bv_feasible_set_db_t* db, bddvec_t current, ivector_t* reasons, uint32_t begin, uint32_t end, ivector_t* out, bv_feasible_explain_mode_t mode, uint32_t bitsize) {
 
   uint32_t i;
-  bv_bdd_manager_t* bddm = db->bddm;
+  bdd_manager_t* bddm = db->bddm;
 
   switch (mode) {
   case EXPLAIN_EMPTY:
-    if (bv_bdd_manager_bdd_is_empty(bddm, current)) {
+    if (bdd_manager_is_empty(bddm, current)) {
       // Core already unsat, done
       return;
     }
     break;
   case EXPLAIN_SINGLETON:
-    if (bv_bdd_manager_bdd_is_point(bddm, current, bitsize)) {
+    if (bdd_manager_is_point(bddm, current, bitsize)) {
       // Core already implies a point, done
       return;
     }
@@ -465,29 +472,27 @@ void bv_feasible_set_quickxplain(const bv_feasible_set_db_t* db, bdd_t current, 
   uint32_t n = (end - begin) / 2;
 
   // Assert first half and minimize the second
-  bdd_t feasible_A = current;
-  bv_bdd_manager_bdd_attach(bddm, feasible_A);
+  bddvec_t feasible_A = bdd_manager_new_copy(bddm, current);
   for (i = begin; i < begin + n; ++ i) {
-    bdd_t feasible_i = db->memory[reasons->data[i]].reason_feasible_set;
-    bdd_t intersect = bv_bdd_manager_bdd_intersect(bddm, feasible_A, feasible_i);
-    bdd_swap(&intersect, &feasible_A);
-    bv_bdd_manager_bdd_detach(bddm, intersect);
+    bddvec_t feasible_i = db->memory[reasons->data[i]].reason_feasible_set;
+    bddvec_t intersect = bdd_manager_intersect(bddm, feasible_A, feasible_i);
+    bddvec_swap(&intersect, &feasible_A);
+    bdd_manager_delete_vec(bddm, intersect);
   }
   uint32_t old_out_size = out->size;
   bv_feasible_set_quickxplain(db, feasible_A, reasons, begin + n, end, out, mode, bitsize);
-  bv_bdd_manager_bdd_detach(bddm, feasible_A);
+  bdd_manager_delete_vec(bddm, feasible_A);
 
   // Now, assert the minimized second half, and minimize the first half
-  bdd_t feasible_B = current;
-  bv_bdd_manager_bdd_attach(bddm, feasible_B);
+  bddvec_t feasible_B = bdd_manager_new_copy(bddm, current);
   for (i = old_out_size; i < out->size; ++ i) {
-    bdd_t feasible_i = db->memory[out->data[i]].reason_feasible_set;
-    bdd_t intersect = bv_bdd_manager_bdd_intersect(bddm, feasible_B, feasible_i);
-    bdd_swap(&intersect, &feasible_B);
-    bv_bdd_manager_bdd_detach(bddm, intersect);
+    bddvec_t feasible_i = db->memory[out->data[i]].reason_feasible_set;
+    bddvec_t intersect = bdd_manager_intersect(bddm, feasible_B, feasible_i);
+    bddvec_swap(&intersect, &feasible_B);
+    bdd_manager_delete_vec(bddm, intersect);
   }
   bv_feasible_set_quickxplain(db, feasible_B, reasons, begin, begin + n, out, mode, bitsize);
-  bv_bdd_manager_bdd_detach(bddm, feasible_B);
+  bdd_manager_delete_vec(bddm, feasible_B);
 }
 
 /** Compare variables for picking the best explanation */
@@ -567,7 +572,7 @@ void bv_feasible_set_filter_reason_indices(const bv_feasible_set_db_t* db, ivect
   // Minimize the core
   ivector_t out;
   init_ivector(&out, 0);
-  bdd_t bdd_true = bv_bdd_manager_true(db->bddm);
+  bddvec_t bdd_true = bdd_manager_true(db->bddm);
   bv_feasible_set_quickxplain(db, bdd_true, reasons_indices, 0, reasons_indices->size, &out, mode, bitsize);
   ivector_swap(reasons_indices, &out);
   delete_ivector(&out);

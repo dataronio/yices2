@@ -5,10 +5,10 @@
  * license agreement which is downloadable along with this program.
  */
 
+#include <mcsat/bv/bdd_manager.h>
 #include "bdd_computation.h"
 #include "bv_feasible_set_db.h"
 #include "bv_plugin.h"
-#include "bv_bdd_manager.h"
 #include "bv_evaluator.h"
 #include "bv_explainer.h"
 #include "bv_utils.h"
@@ -79,7 +79,7 @@ typedef struct {
   bv_feasible_set_db_t* feasible;
 
   /** BDD manager */
-  bv_bdd_manager_t* bddm;
+  bdd_manager_t* bddm;
 
   /** Evaluator */
   bv_evaluator_t evaluator;
@@ -107,6 +107,9 @@ typedef struct {
   } stats;
 
 } bv_plugin_t;
+
+static
+void bv_plugin_decide(plugin_t* plugin, variable_t x, trail_token_t* decide, bool must);
 
 static
 bool term_visit_cmp(void *data, int32_t x, int32_t y) {
@@ -137,7 +140,7 @@ void bv_plugin_construct(plugin_t* plugin, plugin_context_t* ctx) {
   
   init_int_hmap(&bv->variable_propagation_type, 0);
 
-  bv->bddm = bv_bdd_manager_new(ctx);
+  bv->bddm = bdd_manager_new(ctx);
   bv->feasible = bv_feasible_set_db_new(ctx, bv->bddm);
 
   bv_evaluator_construct(&bv->evaluator, ctx);
@@ -197,7 +200,7 @@ void bv_plugin_destruct(plugin_t* plugin) {
   delete_int_hmap(&bv->variable_propagation_type);
   scope_holder_destruct(&bv->scope);
   bv_feasible_set_db_delete(bv->feasible);
-  bv_bdd_manager_delete(bv->bddm);
+  bdd_manager_delete(bv->bddm);
   bv_evaluator_destruct(&bv->evaluator);
   bv_explainer_destruct(&bv->explainer);
   delete_ivector(&bv->processed_variables);
@@ -617,7 +620,7 @@ void bv_plugin_process_unit_constraint(bv_plugin_t* bv, trail_token_t* prop, var
   plugin_context_t* ctx = bv->ctx;
   variable_db_t* var_db = ctx->var_db;
   const mcsat_trail_t* trail = ctx->trail;
-  bv_bdd_manager_t* bddm = bv->bddm;
+  bdd_manager_t* bddm = bv->bddm;
 
   if (ctx_trace_enabled(ctx, "mcsat::bv::propagate")) {
     ctx_trace_printf(ctx, "processing unit constraint :\n");
@@ -653,11 +656,10 @@ void bv_plugin_process_unit_constraint(bv_plugin_t* bv, trail_token_t* prop, var
   term_t x_term = variable_db_get_term(var_db, x);
 
   // Get the BDD of the constraint
-  bdd_t cstr_bdd = bv_bdd_manager_get_bdd(bddm, cstr_term, x_term);
-  assert(cstr_bdd.bdd[0] != NULL);
+  bddvec_t cstr_bdds_v = bdd_manager_get(bddm, cstr_term, x_term);
 
   // Update the feasible intervals
-  bool feasible = bv_feasible_set_db_update(bv->feasible, x, cstr_bdd, &cstr, 1);
+  bool feasible = bv_feasible_set_db_update(bv->feasible, x, cstr_bdds_v, &cstr, 1);
 
   // If the intervals are empty, we have a conflict
   if (!feasible) {
@@ -667,15 +669,15 @@ void bv_plugin_process_unit_constraint(bv_plugin_t* bv, trail_token_t* prop, var
     // - true at 0 level, because safe, no explanation needed, or
     // - Boolean, because shared sort with Booleans
     if (!trail_has_value(trail, x)) {
-      bdd_t feasible = bv_feasible_set_db_get(bv->feasible, x);
+      bddvec_t feasible = bv_feasible_set_db_get(bv->feasible, x);
       uint32_t x_bitsize = bv_term_bitsize(ctx->terms, x_term);
-      bool is_fixed = bv_bdd_manager_bdd_is_point(bddm, feasible, x_bitsize);
+      bool is_fixed = bdd_manager_is_point(bddm, feasible, x_bitsize);
       if (is_fixed) {
         bool is_boolean = variable_db_get_type_kind(var_db, x) == BOOL_TYPE;
         bvconstant_t x_bv_value;
         init_bvconstant(&x_bv_value);
         bvconstant_set_bitsize(&x_bv_value, x_bitsize);
-        bv_bdd_manager_pick_value(bddm, x_term, feasible, &x_bv_value);
+        bdd_manager_pick_value(bddm, x_term, feasible, &x_bv_value);
         if (ctx_trace_enabled(ctx, "mcsat::bv::propagate")) {
           ctx_trace_printf(ctx, "propagating value for :\n");
           ctx_trace_term(ctx, x_term);
@@ -746,17 +748,17 @@ void bv_plugin_new_term_notify(plugin_t* plugin, term_t t, trail_token_t* prop) 
     for (i = 0; i < t_var_list->size; ++ i) {
       variable_t x = t_var_list->data[i];
       term_t x_term = variable_db_get_term(var_db, x);
-      bv_bdd_manager_add_term(bv->bddm, x_term);
+      bdd_manager_add_term(bv->bddm, x_term);
       // It can happen that term is assigned, but it only now became a BV
       // variable (e.g., Boolean variables).
       if (trail_has_value(bv->ctx->trail, x)) {
         const mcsat_value_t* v = trail_get_value(bv->ctx->trail, x);
         switch (v->type) {
         case VALUE_BOOLEAN:
-          bv_bdd_manager_set_bool_value(bv->bddm, x_term, v->b);
+          bdd_manager_set_bool_value(bv->bddm, x_term, v->b);
           break;
         case VALUE_BV:
-          bv_bdd_manager_set_bv_value(bv->bddm, x_term, &v->bv_value);
+          bdd_manager_set_bv_value(bv->bddm, x_term, &v->bv_value);
           break;
         default:
           assert(false);
@@ -835,7 +837,7 @@ void bv_plugin_propagate_var(bv_plugin_t* bv, variable_t x, trail_token_t* prop)
 
   const mcsat_trail_t* trail = bv->ctx->trail;
   variable_db_t* var_db = bv->ctx->var_db;
-  bv_bdd_manager_t* bdd = bv->bddm;
+  bdd_manager_t* bdd = bv->bddm;
 
   // Go through all the variable lists (constraints) where we're watching var
   remove_iterator_t it;
@@ -855,14 +857,14 @@ void bv_plugin_propagate_var(bv_plugin_t* bv, variable_t x, trail_token_t* prop)
 
   // Notify the BDD manager that it has been assigned
   term_t x_term = variable_db_get_term(var_db, x);
-  if (bv_term_is_variable(bv->ctx->terms, x_term) && bv_bdd_manager_has_term(bdd, x_term)) {
+  if (bv_term_is_variable(bv->ctx->terms, x_term) && bdd_manager_has_term(bdd, x_term)) {
     const mcsat_value_t* x_value = trail_get_value(trail, x);
     switch (x_value->type) {
     case VALUE_BOOLEAN:
-      bv_bdd_manager_set_bool_value(bdd, x_term, x_value->b);
+      bdd_manager_set_bool_value(bdd, x_term, x_value->b);
       break;
     case VALUE_BV:
-      bv_bdd_manager_set_bv_value(bdd, x_term, &x_value->bv_value);
+      bdd_manager_set_bv_value(bdd, x_term, &x_value->bv_value);
       break;
     default:
       assert(false);
@@ -1282,7 +1284,7 @@ void bv_plugin_gc_sweep(plugin_t* plugin, const gc_info_t* gc_vars) {
 
   // The BDDs database works over terms, so we can keep it for now
   // TODO: copy over the info cache for terms in gc_vars.
-  // bv_bdd_manager_db_gc_sweep(bv->bddm, gc_vars);
+  // bdd_manager_db_gc_sweep(bv->bddm, gc_vars);
 
   // Feasible sets: everything asserted is in the trail, variables are
   // also marked by the watch manager... nothing to do

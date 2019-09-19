@@ -8,6 +8,12 @@
 #pragma once
 
 #include <stdio.h>
+
+#ifndef NDEBUG
+#define DD_DEBUG
+#define DD_STATS
+#endif
+
 #include <cudd.h>
 
 #include "terms/terms.h"
@@ -42,8 +48,11 @@ void bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t,
 /** Initialize: set all to NULL. */
 void bdds_init(BDD** a, uint32_t n);
 
-/** Dereference all non-NULL bdds in a and set them to NUL.L */
+/** Dereference all non-NULL bdds in a and set them to NULL */
 void bdds_clear(CUDD* cudd, BDD** a, uint32_t n);
+
+/** Dereference all non-NULL bdds  */
+void bdds_detach(CUDD* cudd, BDD** a, uint32_t n);
 
 /** Attach extra reference all bdds in a. */
 void bdds_attach(BDD** a, uint32_t n);
@@ -54,8 +63,8 @@ bool bdds_eq(BDD** a, BDD** b, uint32_t n);
 /** Print the BDDs to out. */
 void bdds_print(CUDD* cudd, BDD** a, uint32_t n, FILE* out);
 
-/** Check if the BDD is a point of given size (only one solution). */
-bool bdds_is_point(CUDD* cudd, BDD* a, uint32_t size);
+/** Check if the disjoint BDDs are a point of given size (only one solution). */
+bool bdds_is_point(CUDD* cudd, BDD** a, uint32_t n, uint32_t bitsize);
 
 /**
  * Check if the constant satisfies the constraint C(x). The variables in x
@@ -63,7 +72,11 @@ bool bdds_is_point(CUDD* cudd, BDD* a, uint32_t size);
  */
 bool bdds_is_model(CUDD* cudd, BDD** x, BDD* C_x, const bvconstant_t* x_value);
 
-/** Get a constant that satisfies the constraint C(x). */
+/**
+ * Get a constant that satisfies the constraint C(x). Constant will be changed
+ * only in places that matter (i.e., you should init it with bit-vealues that
+ * you want as default.
+ */
 void bdds_get_model(CUDD* cudd, BDD** x, BDD* C_x, bvconstant_t* out);
 
 /** Make a new variable. */
@@ -95,6 +108,9 @@ bool bdds_is_constant_neg_one(CUDD* cudd, BDD** a, uint32_t n);
 
 /** Check if a BDD is a power of 2. Returns power, or -1 if not */
 int32_t bdds_is_constant_pow2(CUDD* cudd, BDD** a, uint32_t n);
+
+/** Check whether the two BDDs are disjoint */
+bool bdds_are_disjoint(CUDD* cudd, BDD* a, BDD* b);
 
 /** Negate the BDDs a. */
 void bdds_mk_not(CUDD* cudd, BDD** out, BDD** a, uint32_t n);

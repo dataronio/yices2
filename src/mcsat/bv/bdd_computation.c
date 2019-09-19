@@ -10,8 +10,34 @@
 
 #include "terms/bv64_constants.h"
 
-//#define DEBUG_PRINT(x, n) fprintf(stderr, #x" = "); bdds_print(cudd, x, n, stderr); fprintf(stderr, "\n");
-#define DEBUG_PRINT(x, n)
+// will output attachment data, you can get the counts with
+//   |& grep tach | sort | uniq -c
+//#define DEBUG_ATTACH
+//#define DEBUG_ATTACH_ID 0
+
+static inline
+void ATTACH_REF(BDD* x) {
+#ifdef DEBUG_ATTACH
+  int x_id = Cudd_NodeReadIndex(x);
+  fprintf(stderr, "attach(%d)\n", x_id);
+  if (x_id == DEBUG_ATTACH_ID) {
+    fprintf(stderr, "this\n");
+  }
+#endif
+  Cudd_Ref(x);
+}
+
+static inline
+void DETACH_REF(DdManager* cudd, BDD* x) {
+#ifdef DEBUG_ATTACH
+  int x_id = Cudd_NodeReadIndex(x);
+  fprintf(stderr, "detach(%d)\n", x_id);
+  if (x_id == DEBUG_ATTACH_ID) {
+    fprintf(stderr, "this\n");
+  }
+#endif
+  Cudd_IterDerefBdd(cudd, x);
+}
 
 static inline
 void bdds_reverse(BDD** bdds, uint32_t n) {
@@ -41,7 +67,7 @@ void bdds_copy(BDD** out, BDD** a, uint32_t n) {
     assert(a[i] != NULL);
     assert(out[i] == NULL);
     out[i] = a[i];
-    Cudd_Ref(out[i]);
+    ATTACH_REF(out[i]);
   }
 }
 
@@ -125,16 +151,23 @@ void bdds_init(BDD** a, uint32_t n) {
 void bdds_clear(CUDD* cudd, BDD** a, uint32_t n) {
   for(uint32_t i = 0; i < n; ++ i) {
     if (a[i] != NULL) {
-      Cudd_IterDerefBdd(cudd->cudd, a[i]);
+      DETACH_REF(cudd->cudd, a[i]);
     }
     a[i] = NULL;
+  }
+}
+
+void bdds_detach(CUDD* cudd, BDD** a, uint32_t n) {
+  for(uint32_t i = 0; i < n; ++ i) {
+    assert(a[i] != NULL);
+    DETACH_REF(cudd->cudd, a[i]);
   }
 }
 
 void bdds_attach(BDD** a, uint32_t n) {
   for(uint32_t i = 0; i < n; ++ i) {
     assert(a[i] != NULL);
-    Cudd_Ref(a[i]);
+    ATTACH_REF(a[i]);
   }
 }
 
@@ -162,7 +195,7 @@ void bdds_mk_variable(CUDD* cudd, BDD** out, uint32_t n) {
     bdd_i = Cudd_bddNewVar(cudd->cudd);
     out[n-i-1] = bdd_i;
     // We do increase the reference count so that we are uniform when dereferencing
-    Cudd_Ref(bdd_i);
+    ATTACH_REF(bdd_i);
   }
   if (bdd_i) {
     // Max index: last allocated variable
@@ -185,7 +218,7 @@ void bdds_mk_repeat(CUDD* cudd, BDD** out, BDD* b, uint32_t n) {
   for(uint32_t i = 0; i < n; ++ i) {
     assert(out[i] == NULL);
     out[i] = b;
-    Cudd_Ref(out[i]);
+    ATTACH_REF(out[i]);
   }
 }
 
@@ -193,7 +226,7 @@ void bdds_mk_zero(CUDD* cudd, BDD** out, uint32_t n) {
   for(uint32_t i = 0; i < n; ++ i) {
     assert(out[i] == NULL);
     out[i] = Cudd_ReadLogicZero(cudd->cudd);
-    Cudd_Ref(out[i]);
+    ATTACH_REF(out[i]);
   }
 }
 
@@ -205,7 +238,7 @@ void bdds_mk_one(CUDD* cudd, BDD** out, uint32_t n) {
     } else {
       out[i] = Cudd_ReadOne(cudd->cudd);
     }
-    Cudd_Ref(out[i]);
+    ATTACH_REF(out[i]);
   }
 }
 
@@ -214,7 +247,7 @@ void bdds_mk_constant_64(CUDD* cudd, BDD** out, uint32_t n, uint64_t c) {
     assert(out[i] == NULL);
     bool bit_i = i < 64 ? tst_bit64(c, i) : false;
     out[i] = bit_i ? Cudd_ReadOne(cudd->cudd) : Cudd_ReadLogicZero(cudd->cudd);
-    Cudd_Ref(out[i]);
+    ATTACH_REF(out[i]);
   }
 }
 
@@ -223,7 +256,7 @@ void bdds_mk_constant_raw(CUDD* cudd, BDD** out, uint32_t n, const uint32_t* c) 
     assert(out[i] == NULL);
     bool bit_i = bvconst_tst_bit(c, i);
     out[i] = bit_i ? Cudd_ReadOne(cudd->cudd) : Cudd_ReadLogicZero(cudd->cudd);
-    Cudd_Ref(out[i]);
+    ATTACH_REF(out[i]);
   }
 }
 
@@ -233,7 +266,7 @@ void bdds_mk_constant(CUDD* cudd, BDD** out, uint32_t n, const bvconstant_t* c) 
     assert(out[i] == NULL);
     bool bit_i = bvconst_tst_bit(c->data, i);
     out[i] = bit_i ? Cudd_ReadOne(cudd->cudd) : Cudd_ReadLogicZero(cudd->cudd);
-    Cudd_Ref(out[i]);
+    ATTACH_REF(out[i]);
   }
 }
 
@@ -312,11 +345,47 @@ int32_t bdds_is_constant_pow2(CUDD* cudd, BDD** a, uint32_t n) {
   }
 }
 
+bool bdds_are_disjoint(CUDD* cudd, BDD* a, BDD* b) {
+  assert(a != NULL);
+  assert(b != NULL);
+
+  // could use Cudd_ClassifySupport but it does the same and more, we want
+  // this to be as efficient as possible
+  int* a_indices = NULL;
+  int* b_indices = NULL;
+  int a_indices_size = Cudd_SupportIndices(cudd->cudd, a, &a_indices);
+  int b_indices_size = Cudd_SupportIndices(cudd->cudd, b, &b_indices);
+
+  int a_i = 0, b_i = 0;
+  bool disjoint = true;
+  while (a_i < a_indices_size && b_i < b_indices_size) {
+    int cmp = a_indices[a_i] - b_indices[b_i];
+    if (cmp > 0) {
+      // a_indices[a_i] > b_indices[b_i]
+      b_i ++;
+    } else if (cmp < 0) {
+      // a_indices[a_i] < b_indices[b_i]
+      a_i ++;
+    } else {
+      // a_indices[a_i] == b_indices[b_i]
+      disjoint = false; // not disjoint
+      break;
+    }
+  }
+
+  // release
+  safe_free(a_indices);
+  safe_free(b_indices);
+
+  return disjoint;
+}
+
+
 void bdds_mk_not(CUDD* cudd, BDD** out, BDD** a, uint32_t n) {
   for(uint32_t i = 0; i < n; ++ i) {
     assert(out[i] == NULL);
     out[i] = Cudd_Not(a[i]);
-    Cudd_Ref(out[i]);
+    ATTACH_REF(out[i]);
   }
 }
 
@@ -324,7 +393,7 @@ void bdds_mk_and(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
   for(uint32_t i = 0; i < n; ++ i) {
     assert(out[i] == NULL);
     out[i] = Cudd_bddAnd(cudd->cudd, a[i], b[i]);
-    Cudd_Ref(out[i]);
+    ATTACH_REF(out[i]);
   }
 }
 
@@ -332,34 +401,34 @@ void bdds_mk_or(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
   for(uint32_t i = 0; i < n; ++ i) {
     assert(out[i] == NULL);
     out[i] = Cudd_bddOr(cudd->cudd, a[i], b[i]);
-    Cudd_Ref(out[i]);
+    ATTACH_REF(out[i]);
   }
 }
 
 /** - (a << shift) */
 void bdds_mk_2s_complement_with_shift(CUDD* cudd, BDD** out, BDD** a, uint32_t shift, uint32_t n) {
   BDD* carry = Cudd_ReadOne(cudd->cudd);
-  Cudd_Ref(carry);
+  ATTACH_REF(carry);
 
   BDD* one = Cudd_ReadOne(cudd->cudd);
-  Cudd_Ref(one);
+  ATTACH_REF(one);
 
   for(uint32_t i = 0; i < n; ++ i) {
     BDD* a_shl_neg = i >= shift ? Cudd_Not(a[i-shift]) : one;
     BDD* sum = Cudd_bddXor(cudd->cudd, carry, a_shl_neg);
-    Cudd_Ref(sum);
+    ATTACH_REF(sum);
 
     BDD* new_carry = Cudd_bddAnd(cudd->cudd, carry, a_shl_neg);
-    Cudd_Ref(new_carry);
-    Cudd_IterDerefBdd(cudd->cudd, carry);
+    ATTACH_REF(new_carry);
+    DETACH_REF(cudd->cudd, carry);
     carry = new_carry;
 
     assert(out[i] == NULL);
     out[i] = sum;
   }
 
-  Cudd_IterDerefBdd(cudd->cudd, carry);
-  Cudd_IterDerefBdd(cudd->cudd, one);
+  DETACH_REF(cudd->cudd, carry);
+  DETACH_REF(cudd->cudd, one);
 }
 
 
@@ -375,7 +444,7 @@ void bdds_mk_shl_const(CUDD* cudd, BDD** out, BDD** a, uint32_t shift, uint32_t 
     } else {
       out[i] = a[i-shift];
     }
-    Cudd_Ref(out[i]);
+    ATTACH_REF(out[i]);
   }
 }
 
@@ -392,14 +461,14 @@ void bdds_mk_shl(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
 
     for (uint32_t i = 0; i < n; ++ i) {
       BDD* shifted_a_i = i < shift ? Cudd_ReadLogicZero(cudd->cudd) : a[i-shift];
-      Cudd_Ref(shifted_a_i);
+      ATTACH_REF(shifted_a_i);
 
       BDD* else_case = out[i];
       out[i]  = Cudd_bddIte(cudd->cudd, b_eq_shift_const, shifted_a_i, else_case);
-      Cudd_Ref(out[i]);
+      ATTACH_REF(out[i]);
 
-      Cudd_IterDerefBdd(cudd->cudd, shifted_a_i);
-      Cudd_IterDerefBdd(cudd->cudd, else_case);
+      DETACH_REF(cudd->cudd, shifted_a_i);
+      DETACH_REF(cudd->cudd, else_case);
     }
 
     bdds_clear(cudd, shift_const, n);
@@ -422,14 +491,14 @@ void bdds_mk_lshr(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
 
     for (uint32_t i = 0; i < n; ++ i) {
       BDD* shifted_a_i = i + shift >= n ? Cudd_ReadLogicZero(cudd->cudd) : a[i+shift];
-      Cudd_Ref(shifted_a_i);
+      ATTACH_REF(shifted_a_i);
 
       BDD* else_case = out[i];
       out[i]  = Cudd_bddIte(cudd->cudd, b_eq_shift_const, shifted_a_i, else_case);
-      Cudd_Ref(out[i]);
+      ATTACH_REF(out[i]);
 
-      Cudd_IterDerefBdd(cudd->cudd, shifted_a_i);
-      Cudd_IterDerefBdd(cudd->cudd, else_case);
+      DETACH_REF(cudd->cudd, shifted_a_i);
+      DETACH_REF(cudd->cudd, else_case);
     }
 
     bdds_clear(cudd, shift_const, n);
@@ -452,14 +521,14 @@ void bdds_mk_ashr(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
 
     for (uint32_t i = 0; i < n; ++ i) {
       BDD* shifted_a_i = i + shift >= n ? a[n-1] : a[i+shift];
-      Cudd_Ref(shifted_a_i);
+      ATTACH_REF(shifted_a_i);
 
       BDD* else_case = out[i];
       out[i]  = Cudd_bddIte(cudd->cudd, b_eq_shift_const, shifted_a_i, else_case);
-      Cudd_Ref(out[i]);
+      ATTACH_REF(out[i]);
 
-      Cudd_IterDerefBdd(cudd->cudd, shifted_a_i);
-      Cudd_IterDerefBdd(cudd->cudd, else_case);
+      DETACH_REF(cudd->cudd, shifted_a_i);
+      DETACH_REF(cudd->cudd, else_case);
     }
 
     bdds_clear(cudd, shift_const, n);
@@ -474,13 +543,13 @@ static
 void bdds_mk_bool_or(CUDD* cudd, BDD** out, const pvector_t* a) {
   uint32_t n = a->size;
   out[0] = Cudd_ReadLogicZero(cudd->cudd);
-  Cudd_Ref(out[0]);
+  ATTACH_REF(out[0]);
   for (uint32_t i = 0; i < n; i ++ ) {
     BDD* tmp = out[0];
     BDD** child_i = (BDD**) a->data[i];
     out[0] = Cudd_bddOr(cudd->cudd, tmp, child_i[0]);
-    Cudd_Ref(out[0]);
-    Cudd_IterDerefBdd(cudd->cudd, tmp);
+    ATTACH_REF(out[0]);
+    DETACH_REF(cudd->cudd, tmp);
   }
 }
 
@@ -492,7 +561,7 @@ void bdds_mk_eq(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
   out[0] = Cudd_Xeqy(cudd->cudd, n, a, b);
   bdds_reverse(a, n);
   bdds_reverse(b, n);
-  Cudd_Ref(out[0]);
+  ATTACH_REF(out[0]);
 }
 
 void bdds_mk_eq0(CUDD* cudd, BDD** out, BDD** a, uint32_t n) {
@@ -500,15 +569,15 @@ void bdds_mk_eq0(CUDD* cudd, BDD** out, BDD** a, uint32_t n) {
   assert(out[0] == NULL);
 
   BDD* result = Cudd_ReadOne(cudd->cudd);
-  Cudd_Ref(result);
+  ATTACH_REF(result);
 
   BDD* zero = Cudd_ReadLogicZero(cudd->cudd);
-  Cudd_Ref(zero);
+  ATTACH_REF(zero);
 
   for (uint32_t i = 0; i < n; ++ i) {
     BDD* new_result = Cudd_bddAnd(cudd->cudd, result, Cudd_Not(a[i]));
-    Cudd_Ref(new_result);
-    Cudd_IterDerefBdd(cudd->cudd, result);
+    ATTACH_REF(new_result);
+    DETACH_REF(cudd->cudd, result);
     result = new_result;
     // Short-circuit
     if (result == zero) {
@@ -516,7 +585,7 @@ void bdds_mk_eq0(CUDD* cudd, BDD** out, BDD** a, uint32_t n) {
     }
   }
 
-  Cudd_IterDerefBdd(cudd->cudd, zero);
+  DETACH_REF(cudd->cudd, zero);
   out[0] = result;
 }
 
@@ -534,36 +603,36 @@ void bdds_mk_plus_in_place(CUDD* cudd, BDD** out, BDD** a, BDD* cond, uint32_t n
   }
 
   BDD* carry = Cudd_ReadLogicZero(cudd->cudd);
-  Cudd_Ref(carry);
+  ATTACH_REF(carry);
 
   for (uint32_t i = shift, j = 0; i < n; ++ i, ++ j) {
     // What we are adding (with condition if there)
     BDD* to_add = cond == NULL ? a[j] : Cudd_bddAnd(cudd->cudd, cond, a[j]);
-    Cudd_Ref(to_add);
+    ATTACH_REF(to_add);
     // Sum up the bits
     BDD* sum1 = Cudd_bddXor(cudd->cudd, out[i], to_add);
-    Cudd_Ref(sum1);
+    ATTACH_REF(sum1);
     BDD* sum2 = Cudd_bddXor(cudd->cudd, sum1, carry);
-    Cudd_Ref(sum2);
+    ATTACH_REF(sum2);
     // Compute carry
     BDD* carry1 = Cudd_bddAnd(cudd->cudd, out[i], to_add);
-    Cudd_Ref(carry1);
+    ATTACH_REF(carry1);
     BDD* carry2 = Cudd_bddAnd(cudd->cudd, sum1, carry);
-    Cudd_Ref(carry2);
-    Cudd_IterDerefBdd(cudd->cudd, carry);
+    ATTACH_REF(carry2);
+    DETACH_REF(cudd->cudd, carry);
     carry = Cudd_bddOr(cudd->cudd, carry1, carry2);
-    Cudd_Ref(carry);
+    ATTACH_REF(carry);
     // Save to output
-    Cudd_IterDerefBdd(cudd->cudd, out[i]);
+    DETACH_REF(cudd->cudd, out[i]);
     out[i] = sum2; // Don't deref sum2, it's in out now
     // Remove temps
-    Cudd_IterDerefBdd(cudd->cudd, to_add);
-    Cudd_IterDerefBdd(cudd->cudd, sum1);
-    Cudd_IterDerefBdd(cudd->cudd, carry1);
-    Cudd_IterDerefBdd(cudd->cudd, carry2);
+    DETACH_REF(cudd->cudd, to_add);
+    DETACH_REF(cudd->cudd, sum1);
+    DETACH_REF(cudd->cudd, carry1);
+    DETACH_REF(cudd->cudd, carry2);
   }
 
-  Cudd_IterDerefBdd(cudd->cudd, carry);
+  DETACH_REF(cudd->cudd, carry);
 }
 
 void bdds_mk_plus(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
@@ -682,8 +751,8 @@ void bdds_mk_div_rem(CUDD* cudd, BDD** out_div, BDD** out_rem, BDD** a, BDD** b,
   BDD** a_copy = tmp; // n bits
   BDD** a_slice_sub_b = tmp + n; // n bits at most
 
-  BDD* zero = Cudd_ReadLogicZero(cudd->cudd); Cudd_Ref(zero);
-  BDD* one = Cudd_ReadOne(cudd->cudd); Cudd_Ref(one);
+  BDD* zero = Cudd_ReadLogicZero(cudd->cudd); ATTACH_REF(zero);
+  BDD* one = Cudd_ReadOne(cudd->cudd); ATTACH_REF(one);
   
   bdds_copy(a_copy, a, n);
 
@@ -699,7 +768,7 @@ void bdds_mk_div_rem(CUDD* cudd, BDD** out_div, BDD** out_rem, BDD** a, BDD** b,
       bdds_mk_eq0(cudd, &b_slice_eq_0, b+i, n-i);
     } else {
       b_slice_eq_0 = one;
-      Cudd_Ref(b_slice_eq_0);
+      ATTACH_REF(b_slice_eq_0);
     }
     if (b_slice_eq_0 == zero) {
       can_subtract = zero;
@@ -707,12 +776,12 @@ void bdds_mk_div_rem(CUDD* cudd, BDD** out_div, BDD** out_rem, BDD** a, BDD** b,
       bdds_mk_ge(cudd, &a_slice_ge_b, a_slice, b, i);
       can_subtract = Cudd_bddAnd(cudd->cudd, a_slice_ge_b, b_slice_eq_0);
     }
-    Cudd_Ref(can_subtract);
+    ATTACH_REF(can_subtract);
     // record division bit
     if (out_div != NULL) {
       assert(out_div[n-i] == NULL);
       out_div[n-i] = can_subtract;
-      Cudd_Ref(out_div[n-i]);
+      ATTACH_REF(out_div[n-i]);
     }
     // Short-circuit if not possible to subtract
     if (can_subtract != zero) {
@@ -723,17 +792,17 @@ void bdds_mk_div_rem(CUDD* cudd, BDD** out_div, BDD** out_rem, BDD** a, BDD** b,
       for (uint32_t k = 0; k < i; ++ k) {
         BDD* tmp = a_slice[k];
         a_slice[k] = Cudd_bddIte(cudd->cudd, can_subtract, a_slice_sub_b[k], a_slice[k]);
-        Cudd_Ref(a_slice[k]);
-        Cudd_IterDerefBdd(cudd->cudd, tmp);
+        ATTACH_REF(a_slice[k]);
+        DETACH_REF(cudd->cudd, tmp);
       }
       // remove temp
       bdds_clear(cudd, a_slice_sub_b, i);
     }
-    Cudd_IterDerefBdd(cudd->cudd, b_slice_eq_0);
+    DETACH_REF(cudd->cudd, b_slice_eq_0);
     if (a_slice_ge_b != NULL) {
-      Cudd_IterDerefBdd(cudd->cudd, a_slice_ge_b);
+      DETACH_REF(cudd->cudd, a_slice_ge_b);
     }
-    Cudd_IterDerefBdd(cudd->cudd, can_subtract);
+    DETACH_REF(cudd->cudd, can_subtract);
   }
 
   if (out_rem != NULL) {
@@ -744,8 +813,8 @@ void bdds_mk_div_rem(CUDD* cudd, BDD** out_div, BDD** out_rem, BDD** a, BDD** b,
 
   bdds_remove_reserve(cudd, tmp_size);
 
-  Cudd_IterDerefBdd(cudd->cudd, zero);
-  Cudd_IterDerefBdd(cudd->cudd, one);
+  DETACH_REF(cudd->cudd, zero);
+  DETACH_REF(cudd->cudd, one);
 }
 
 void bdds_mk_div(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
@@ -768,7 +837,7 @@ void bdds_mk_ite(CUDD* cudd, BDD** out, BDD* cond, BDD** a, BDD** b, uint32_t n)
   for (uint32_t i = 0; i < n; ++ i) {
     assert(out[i] == NULL);
     out[i] = Cudd_bddIte(cudd->cudd, cond, a[i], b[i]);
-    Cudd_Ref(out[i]);
+    ATTACH_REF(out[i]);
   }
 }
 
@@ -836,14 +905,14 @@ void bdds_mk_sdiv(CUDD* cudd, BDD** out_bdds, BDD** a, BDD** b, uint32_t n) {
 
     // Case msb_a = 0, msb_b = 0
     BDD* case00 = Cudd_bddAnd(cudd->cudd, Cudd_Not(msb_a), Cudd_Not(msb_b));
-    Cudd_Ref(case00);
+    ATTACH_REF(case00);
     if (case00 != zero) {
       bdds_mk_div(cudd, case00_result, a, b, n);
     }
 
     // Case msb_a = 1, msb_b = 0
     BDD* case10 = Cudd_bddAnd(cudd->cudd, msb_a, Cudd_Not(msb_b));
-    Cudd_Ref(case10);
+    ATTACH_REF(case10);
     if (case10 != zero) {
       bdds_mk_2s_complement(cudd, bvneg_a, a, n);
       bdds_mk_div(cudd, bvdiv_bvneg_a_b, bvneg_a, b, n);
@@ -852,7 +921,7 @@ void bdds_mk_sdiv(CUDD* cudd, BDD** out_bdds, BDD** a, BDD** b, uint32_t n) {
 
     // Case msb_a = 0, msb_b = 1
     BDD* case01 = Cudd_bddAnd(cudd->cudd, Cudd_Not(msb_a), msb_b);
-    Cudd_Ref(case01);
+    ATTACH_REF(case01);
     if (case01 != zero) {
       bdds_mk_2s_complement(cudd, bvneg_b, b, n);
       bdds_mk_div(cudd, bvdiv_a_bvneg_b, a, bvneg_b, n);
@@ -861,7 +930,7 @@ void bdds_mk_sdiv(CUDD* cudd, BDD** out_bdds, BDD** a, BDD** b, uint32_t n) {
 
     // Case msb_a = 1, msb_b = 1 (BDD not needed, but we make it to shortcircuit)
     BDD* case11 = Cudd_bddAnd(cudd->cudd, msb_a, msb_b);
-    Cudd_Ref(case11);
+    ATTACH_REF(case11);
     if (case11 != zero) {
       if (bvneg_a[0] == NULL) {
         bdds_mk_2s_complement(cudd, bvneg_a, a, n);
@@ -881,10 +950,10 @@ void bdds_mk_sdiv(CUDD* cudd, BDD** out_bdds, BDD** a, BDD** b, uint32_t n) {
     bdds_mk_ite(cudd, out_bdds, case00, case00_result, ite2, n);
 
     // Clear temps
-    Cudd_IterDerefBdd(cudd->cudd, case00);
-    Cudd_IterDerefBdd(cudd->cudd, case10);
-    Cudd_IterDerefBdd(cudd->cudd, case01);
-    Cudd_IterDerefBdd(cudd->cudd, case11);
+    DETACH_REF(cudd->cudd, case00);
+    DETACH_REF(cudd->cudd, case10);
+    DETACH_REF(cudd->cudd, case01);
+    DETACH_REF(cudd->cudd, case11);
 
   }
 
@@ -924,19 +993,19 @@ void bdds_mk_srem(CUDD* cudd, BDD** out_bdds, BDD** a, BDD** b, uint32_t n) {
 
   // Case msb_a = 0, msb_b = 0 -> (bvurem s t)
   BDD* case00 = Cudd_bddAnd(cudd->cudd, Cudd_Not(msb_a), Cudd_Not(msb_b));
-  Cudd_Ref(case00);
+  ATTACH_REF(case00);
   bdds_mk_rem(cudd, case00_result, a, b, n);
 
   // Case msb_a = 1, msb_b = 0 -> (bvneg (bvurem (bvneg s) t))
   BDD* case10 = Cudd_bddAnd(cudd->cudd, msb_a, Cudd_Not(msb_b));
-  Cudd_Ref(case10);
+  ATTACH_REF(case10);
   bdds_mk_2s_complement(cudd, bvneg_a, a, n);
   bdds_mk_rem(cudd, bvrem_bvneg_a_b, bvneg_a, b, n);
   bdds_mk_2s_complement(cudd, case10_result, bvrem_bvneg_a_b, n);
 
   // Case msb_a = 0, msb_b = 1 -> (bvurem s (bvneg t)))
   BDD* case01 = Cudd_bddAnd(cudd->cudd, Cudd_Not(msb_a), msb_b);
-  Cudd_Ref(case01);
+  ATTACH_REF(case01);
   bdds_mk_2s_complement(cudd, bvneg_b, b, n);
   bdds_mk_rem(cudd, case01_result, a, bvneg_b, n);
 
@@ -950,9 +1019,9 @@ void bdds_mk_srem(CUDD* cudd, BDD** out_bdds, BDD** a, BDD** b, uint32_t n) {
   bdds_mk_ite(cudd, out_bdds, case00, case00_result, ite2, n);
 
   // Clear temps
-  Cudd_IterDerefBdd(cudd->cudd, case00);
-  Cudd_IterDerefBdd(cudd->cudd, case10);
-  Cudd_IterDerefBdd(cudd->cudd, case01);
+  DETACH_REF(cudd->cudd, case00);
+  DETACH_REF(cudd->cudd, case10);
+  DETACH_REF(cudd->cudd, case01);
   bdds_clear(cudd, tmp, tmp_size);
   bdds_remove_reserve(cudd, tmp_size);
 }
@@ -1008,11 +1077,11 @@ void bdds_mk_smod(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
   BDD* cond1 = NULL;
   bdds_mk_eq0(cudd, &cond1, u, n);
   BDD* cond2 = Cudd_bddAnd(cudd->cudd, Cudd_Not(msb_a), Cudd_Not(msb_b));
-  Cudd_Ref(cond2);
+  ATTACH_REF(cond2);
   BDD* cond3 = Cudd_bddAnd(cudd->cudd, msb_a, Cudd_Not(msb_b));
-  Cudd_Ref(cond3);
+  ATTACH_REF(cond3);
   BDD* cond4 = Cudd_bddAnd(cudd->cudd, Cudd_Not(msb_a), msb_b);
-  Cudd_Ref(cond4);
+  ATTACH_REF(cond4);
 
   // (ite (and (= ?msb_s #b0) (= ?msb_t #b1))
   //   (bvadd u t) (bvneg u))
@@ -1027,10 +1096,10 @@ void bdds_mk_smod(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
   bdds_mk_ite(cudd, out, cond1, u, ite2, n);
 
   // Clear temps
-  Cudd_IterDerefBdd(cudd->cudd, cond1);
-  Cudd_IterDerefBdd(cudd->cudd, cond2);
-  Cudd_IterDerefBdd(cudd->cudd, cond3);
-  Cudd_IterDerefBdd(cudd->cudd, cond4);
+  DETACH_REF(cudd->cudd, cond1);
+  DETACH_REF(cudd->cudd, cond2);
+  DETACH_REF(cudd->cudd, cond3);
+  DETACH_REF(cudd->cudd, cond4);
   bdds_clear(cudd, tmp, tmp_size);
   bdds_remove_reserve(cudd, tmp_size);
 }
@@ -1106,7 +1175,7 @@ void bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t,
       for (uint32_t i = 0; i < children_bdds->size; ++ i) {
         assert(out_bdds[i] == NULL);
         out_bdds[i] = ((BDD**) children_bdds->data[i])[0];
-        Cudd_Ref(out_bdds[i]);
+        ATTACH_REF(out_bdds[i]);
       }
       break;
     }
@@ -1119,7 +1188,7 @@ void bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t,
       BDD* bit_bdd = child_bdds[select_idx];
       assert(out_bdds[0] == NULL);
       out_bdds[0] = bit_bdd;
-      Cudd_Ref(out_bdds[0]);
+      ATTACH_REF(out_bdds[0]);
       break;
     }
     case BV_POLY: {
@@ -1247,7 +1316,7 @@ void bdds_mk_ge(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
   bdds_reverse(b, n);
   // a < b
   out[0] = Cudd_Xgty(cudd->cudd, n, NULL, b, a);
-  Cudd_Ref(out[0]);
+  ATTACH_REF(out[0]);
   // a >= b
   out[0] = Cudd_Not(out[0]);
   // Undo reversal
@@ -1265,12 +1334,17 @@ void bdds_mk_sge(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
   b[n-1] = Cudd_Not(b[n-1]);
 }
 
-bool bdds_is_point(CUDD* cudd, BDD* a, uint32_t size) {
-  bool is_cube = Cudd_CheckCube(cudd->cudd, a);
-  if (!is_cube) { return false; }
-  int dag_size = Cudd_DagSize(a);
-  if (dag_size != size + 1) { return false; }
-  return true;
+bool bdds_is_point(CUDD* cudd, BDD** a, uint32_t n, uint32_t bitsize) {
+  uint32_t i;
+  uint32_t sum = 0;
+  for (i = 0; i < n; i ++) {
+    if (!Cudd_CheckCube(cudd->cudd, a[i])) {
+      return false;
+    }
+    int dag_size = Cudd_DagSize(a[i]);
+    sum += dag_size - 1;
+  }
+  return sum == bitsize;
 }
 
 bool bdds_is_model(CUDD* cudd, BDD** x, BDD* C_x, const bvconstant_t* x_value) {
@@ -1371,9 +1445,11 @@ void bdds_get_model(CUDD* cudd, BDD** x, BDD* C_x, bvconstant_t* out) {
     char x_i_value = cudd->tmp_model[x_i];
     if (x_i_value == 1) {
       bvconst_set_bit(out->data, i);
-    } else {
-      // We just take 0 as the default (if x_i_value == 2, we can choose anything)
+    } else if (x_i_value == 0) {
+      // We just take 0 as the default
       bvconst_clr_bit(out->data, i);
+    } else {
+      assert(x_i_value == 2);
     }
   }
 }
