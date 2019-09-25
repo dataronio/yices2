@@ -43,7 +43,7 @@ void bdds_delete(CUDD* cudd);
  * the output. The out_bdds should be initialized to NULL.
  */
 void bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t,
-    const pvector_t* children_bdds, BDD** out_bdds);
+    const pvector_t* children_bdds, pvector_t* out_bdds);
 
 /** Initialize: set all to NULL. */
 void bdds_init(BDD** a, uint32_t n);
@@ -117,6 +117,9 @@ void bdds_mk_not(CUDD* cudd, BDD** out, BDD** a, uint32_t n);
 
 /** Boolean and of the BDDs in a and b. */
 void bdds_mk_and(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n);
+
+/** Boolean and of the bdds in a, i.e. out[0] = a[0] && ... && a[n-1] */
+void bdds_mk_conjunction(CUDD* cudd, BDD** out, BDD** a, uint32_t n);
 
 /** Boolean or of the BDDs in a and b. */
 void bdds_mk_or(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n);

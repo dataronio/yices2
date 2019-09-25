@@ -314,12 +314,24 @@ term_info_t* bdd_manager_get_info(const bdd_manager_t* bddm, term_t t) {
  * Otherwise: return constant BDDs
  */
 static inline
-BDD** bdd_manager_get_bdds(bdd_manager_t* bddm, term_t t) {
+BDD** bdd_manager_get_bdds_same_size(bdd_manager_t* bddm, term_t t) {
   term_info_t* t_info = bdd_manager_get_info(bddm, t);
   int_hmap_pair_t* find = int_hmap_find(&bddm->visited, t);
+  uint32_t t_bitsize = bv_term_bitsize(bddm->ctx->terms, t);
   assert(find != NULL);
   if (find->val) {
     // Contains the unassigned variable, so we get the BDDs
+    if (t_info->v.size != t_bitsize) {
+      assert(t_bitsize == 1);
+      // Have to flatten the BDD representation and replace it
+      bddvec_t old_v = t_info->v;
+      bddvec_t new_v = bddvec_manager_new_vec(&bddm->bdds, 1);
+      BDD** old_bdds = bddvec_manager_get_bdds(&bddm->bdds, old_v);
+      BDD** new_bdds = bddvec_manager_get_bdds(&bddm->bdds, new_v);
+      bdds_mk_conjunction(bddm->cudd, new_bdds, old_bdds, old_v.size);
+      bddvec_manager_delete_vec(&bddm->bdds, old_v);
+      t_info->v = new_v;
+    }
     return bddvec_manager_get_bdds(&bddm->bdds, t_info->v);
   } else {
     // Convert the value to BDD
@@ -875,17 +887,17 @@ void bdd_manager_compute_bdd(bdd_manager_t* bddm, term_t t) {
 
   // Term data
   term_info_t* t_info = bdd_manager_get_info(bddm, t);
-  uint32_t bitsize = bv_term_bitsize(terms, t);
 
   // Remove all previous BDDs and make a new ones
   bdd_manager_delete_vec(bddm, t_info->v);
-  t_info->v = bddvec_manager_new_vec(&bddm->bdds, bitsize);
-  BDD** t_bdds = bddvec_manager_get_bdds(&bddm->bdds, t_info->v);
+
+  pvector_t out_bdds;
+  init_pvector(&out_bdds, 0);
 
   // Negation
   if (is_neg_term(t)) {
     t_i = unsigned_term(t);
-    bdds_i = bdd_manager_get_bdds(bddm, t_i);
+    bdds_i = bdd_manager_get_bdds_same_size(bddm, t_i);
     pvector_push(&children_bdds, bdds_i);
   } else {
     term_kind_t t_kind = term_kind(terms, t);
@@ -910,14 +922,14 @@ void bdd_manager_compute_bdd(bdd_manager_t* bddm, term_t t) {
       composite_term_t* t_comp = composite_term_desc(terms, t);
       for (i = 0; i < t_comp->arity; ++i) {
         t_i = t_comp->arg[i];
-        bdds_i = bdd_manager_get_bdds(bddm, t_i);
+        bdds_i = bdd_manager_get_bdds_same_size(bddm, t_i);
         pvector_push(&children_bdds, bdds_i);
       }
       break;
     }
     case BIT_TERM:
       t_i = bit_term_arg(terms, t);
-      bdds_i = bdd_manager_get_bdds(bddm, t_i);
+      bdds_i = bdd_manager_get_bdds_same_size(bddm, t_i);
       pvector_push(&children_bdds, bdds_i);
       break;
     case BV_POLY: {
@@ -925,7 +937,7 @@ void bdd_manager_compute_bdd(bdd_manager_t* bddm, term_t t) {
       for (uint32_t i = 0; i < t_poly->nterms; ++i) {
         if (t_poly->mono[i].var == const_idx) continue;
         t_i = t_poly->mono[i].var;
-        bdds_i = bdd_manager_get_bdds(bddm, t_i);
+        bdds_i = bdd_manager_get_bdds_same_size(bddm, t_i);
         pvector_push(&children_bdds, bdds_i);
       }
       break;
@@ -936,7 +948,7 @@ void bdd_manager_compute_bdd(bdd_manager_t* bddm, term_t t) {
       for (uint32_t i = 0; i < t_poly->nterms; ++i) {
         if (t_poly->mono[i].var == const_idx) continue;
         t_i = t_poly->mono[i].var;
-        bdds_i = bdd_manager_get_bdds(bddm, t_i);
+        bdds_i = bdd_manager_get_bdds_same_size(bddm, t_i);
         pvector_push(&children_bdds, bdds_i);
       }
       break;
@@ -945,7 +957,7 @@ void bdd_manager_compute_bdd(bdd_manager_t* bddm, term_t t) {
       pprod_t* t_pprod = pprod_term_desc(terms, t);
       for (uint32_t i = 0; i < t_pprod->len; ++ i) {
         t_i = t_pprod->prod[i].var;
-        bdds_i = bdd_manager_get_bdds(bddm, t_i);
+        bdds_i = bdd_manager_get_bdds_same_size(bddm, t_i);
         pvector_push(&children_bdds, bdds_i);
       }
       break;
@@ -957,15 +969,24 @@ void bdd_manager_compute_bdd(bdd_manager_t* bddm, term_t t) {
   }
 
   // We have the children values compute
-  bdds_compute_bdds(bddm->cudd, terms, t, &children_bdds, t_bdds);
+  bdds_compute_bdds(bddm->cudd, terms, t, &children_bdds, &out_bdds);
 
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
     ctx_trace_printf(bddm->ctx, "bdd_manager: BDD done for ");
     ctx_trace_term(bddm->ctx, t);
   }
 
+
+  // Create the new bdd vector and copy over the BDDs
+  t_info->v = bddvec_manager_new_vec(&bddm->bdds, out_bdds.size);
+  BDD** t_bdds = bddvec_manager_get_bdds(&bddm->bdds, t_info->v);
+  for (uint32_t i = 0; i < out_bdds.size; ++ i) {
+    t_bdds[i] = out_bdds.data[i]; // already attached
+  }
+
   // Remove temp
   delete_pvector(&children_bdds);
+  delete_pvector(&out_bdds);
 }
 
 static

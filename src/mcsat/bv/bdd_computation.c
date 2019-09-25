@@ -397,6 +397,20 @@ void bdds_mk_and(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
   }
 }
 
+void bdds_mk_conjunction(CUDD* cudd, BDD** out, BDD** a, uint32_t n) {
+  assert(out[0] == NULL);
+  BDD* tmp;
+  BDD* current = a[0];
+  ATTACH_REF(current);
+  for(uint32_t i = 1; i < n; ++ i) {
+    tmp = Cudd_bddAnd(cudd->cudd, a[i], out[0]);
+    ATTACH_REF(tmp);
+    DETACH_REF(cudd->cudd, current);
+    current = tmp;
+  }
+  out[0] = current;
+}
+
 void bdds_mk_or(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
   for(uint32_t i = 0; i < n; ++ i) {
     assert(out[i] == NULL);
@@ -1105,14 +1119,20 @@ void bdds_mk_smod(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
 }
 
 void bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t,
-    const pvector_t* children_bdds, BDD** out_bdds) {
+    const pvector_t* children_bdds, pvector_t* out) {
 
   assert(bv_term_has_children(terms, t));
 
   BDD** t0;
   BDD** t1;
 
+  // Default, just make the same size
   uint32_t t_bitsize = bv_term_bitsize(terms, t);
+  assert(out->size == 0);
+  for (uint32_t i = 0; i < t_bitsize; ++ i) {
+    pvector_push(out, NULL);
+  }
+  BDD** out_bdds = (BDD**) out->data;
 
   if (is_neg_term(t)) {
     // Negation
@@ -1276,6 +1296,7 @@ void bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t,
       uint32_t child_bitsize = bv_term_bitsize(terms, child);
       t0 = (BDD**) children_bdds->data[0];
       t1 = (BDD**) children_bdds->data[1];
+      // Make by hand, so that we can optimize
       bdds_mk_eq(cudd, out_bdds, t0, t1, child_bitsize);
       break;
     }
