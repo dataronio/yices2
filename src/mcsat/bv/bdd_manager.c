@@ -158,11 +158,13 @@ void bddvec_manager_delete_vec(bddvec_manager_t* m, bddvec_t v) {
   bddvec_allocator_delete_vec(m->alloc + v.size, v.id);
 }
 
+#define BDDVEC_NULL_ID UINT32_MAX
+
 /** Null vector id */
-const bddvec_id_t bddvec_null_id = UINT32_MAX;
+const bddvec_id_t bddvec_null_id = BDDVEC_NULL_ID;
 
 /** Actual null vector */
-const bddvec_t bddvec_null = { 0, bddvec_null_id };
+const bddvec_t bddvec_null = { 0, BDDVEC_NULL_ID };
 
 /** Information stored about the terms. */
 typedef struct {
