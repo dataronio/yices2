@@ -372,7 +372,7 @@ void bdds_mk_conjunction(CUDD* cudd, BDD** out, BDD** a, uint32_t n) {
   BDD* current = a[0];
   ATTACH_REF(current);
   for(uint32_t i = 1; i < n; ++ i) {
-    tmp = Cudd_bddAnd(cudd->cudd, a[i], out[0]);
+    tmp = Cudd_bddAnd(cudd->cudd, a[i], current);
     ATTACH_REF(tmp);
     DETACH_REF(cudd->cudd, current);
     current = tmp;
@@ -548,6 +548,36 @@ void bdds_mk_eq(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
   bdds_reverse(a, n);
   bdds_reverse(b, n);
   ATTACH_REF(out[0]);
+}
+
+/** Compute equality, but try to make it over disjoint */
+bddvec_t bdds_mk_eq_manual(CUDD* cudd, BDD** a, BDD** b, uint32_t n) {
+  assert(n > 0);
+
+  // Allocate a temporary storage for individual equalities
+  bddvec_t tmp_v = bdd_manager_new_vec(cudd->bddm, n);
+  BDD** tmp_bdds = bdd_manager_get_bdds(cudd->bddm, tmp_v);
+
+  // Create individual equalities
+  for (uint32_t i = 0; i < n; ++ i) {
+    assert(a[i] != NULL);
+    assert(b[i] != NULL);
+    tmp_bdds[i] = Cudd_bddXnor(cudd->cudd, a[i], b[i]);
+    ATTACH_REF(tmp_bdds[i]);
+  }
+
+  // Add them all together and construct the result vector
+  pvector_t result_bdds;
+  init_pvector(&result_bdds, 0);
+  bdds_disjoint_set_add(cudd, tmp_bdds, n, &result_bdds);
+  bddvec_t result = bdd_manager_new_vec_from(cudd->bddm, (BDD**) result_bdds.data, result_bdds.size);
+
+  // Clear up the temporaries
+  bdds_clear(cudd, tmp_bdds, n);
+  bdd_manager_delete_vec(cudd->bddm, tmp_v);
+  delete_pvector(&result_bdds);
+
+  return result;
 }
 
 void bdds_mk_eq0(CUDD* cudd, BDD** out, BDD** a, uint32_t n) {
@@ -1106,14 +1136,14 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
 
   // Default, just make the same size
   uint32_t t_bitsize = bv_term_bitsize(terms, t);
-  bddvec_t result = bdd_manager_new_vec(cudd->bddm, t_bitsize);
-  BDD** out_bdds = bdd_manager_get_bdds(cudd->bddm, result);
+  bddvec_t result_v = bdd_manager_new_vec(cudd->bddm, t_bitsize);
+  BDD** result_bdds = bdd_manager_get_bdds(cudd->bddm, result_v);
 
   if (is_neg_term(t)) {
     // Negation
     assert(children_bdds->size == 1);
     t0 = (BDD**) children_bdds->data[0];
-    bdds_mk_not(cudd, out_bdds, t0, t_bitsize);
+    bdds_mk_not(cudd, result_bdds, t0, t_bitsize);
   } else {
     term_kind_t kind = term_kind(terms, t);
     switch (kind) {
@@ -1121,56 +1151,56 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
       assert(children_bdds->size == 2);
       t0 = (BDD**) children_bdds->data[0];
       t1 = (BDD**) children_bdds->data[1];
-      bdds_mk_div(cudd, out_bdds, t0, t1, t_bitsize);
+      bdds_mk_div(cudd, result_bdds, t0, t1, t_bitsize);
       break;
     case BV_REM:
       assert(children_bdds->size == 2);
       t0 = (BDD**) children_bdds->data[0];
       t1 = (BDD**) children_bdds->data[1];
-      bdds_mk_rem(cudd, out_bdds, t0, t1, t_bitsize);
+      bdds_mk_rem(cudd, result_bdds, t0, t1, t_bitsize);
       break;
     case BV_SDIV:
       assert(children_bdds->size == 2);
       t0 = (BDD**) children_bdds->data[0];
       t1 = (BDD**) children_bdds->data[1];
-      bdds_mk_sdiv(cudd, out_bdds, t0, t1, t_bitsize);
+      bdds_mk_sdiv(cudd, result_bdds, t0, t1, t_bitsize);
       break;
     case BV_SREM:
       assert(children_bdds->size == 2);
       t0 = (BDD**) children_bdds->data[0];
       t1 = (BDD**) children_bdds->data[1];
-      bdds_mk_srem(cudd, out_bdds, t0, t1, t_bitsize);
+      bdds_mk_srem(cudd, result_bdds, t0, t1, t_bitsize);
       break;
     case BV_SMOD:
       assert(children_bdds->size == 2);
       t0 = (BDD**) children_bdds->data[0];
       t1 = (BDD**) children_bdds->data[1];
-      bdds_mk_smod(cudd, out_bdds, t0, t1, t_bitsize);
+      bdds_mk_smod(cudd, result_bdds, t0, t1, t_bitsize);
       break;
     case BV_SHL:
       assert(children_bdds->size == 2);
       t0 = (BDD**) children_bdds->data[0];
       t1 = (BDD**) children_bdds->data[1];
-      bdds_mk_shl(cudd, out_bdds, t0, t1, t_bitsize);
+      bdds_mk_shl(cudd, result_bdds, t0, t1, t_bitsize);
       break;
     case BV_LSHR:
       assert(children_bdds->size == 2);
       t0 = (BDD**) children_bdds->data[0];
       t1 = (BDD**) children_bdds->data[1];
-      bdds_mk_lshr(cudd, out_bdds, t0, t1, t_bitsize);
+      bdds_mk_lshr(cudd, result_bdds, t0, t1, t_bitsize);
       break;
     case BV_ASHR:
       assert(children_bdds->size == 2);
       t0 = (BDD**) children_bdds->data[0];
       t1 = (BDD**) children_bdds->data[1];
-      bdds_mk_ashr(cudd, out_bdds, t0, t1, t_bitsize);
+      bdds_mk_ashr(cudd, result_bdds, t0, t1, t_bitsize);
       break;
     case BV_ARRAY: {
       assert(children_bdds->size == t_bitsize);
       for (uint32_t i = 0; i < children_bdds->size; ++ i) {
-        assert(out_bdds[i] == NULL);
-        out_bdds[i] = ((BDD**) children_bdds->data[i])[0];
-        ATTACH_REF(out_bdds[i]);
+        assert(result_bdds[i] == NULL);
+        result_bdds[i] = ((BDD**) children_bdds->data[i])[0];
+        ATTACH_REF(result_bdds[i]);
       }
       break;
     }
@@ -1181,9 +1211,9 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
       uint32_t select_idx = desc->idx;
       BDD** child_bdds = ((BDD**)children_bdds->data[0]);
       BDD* bit_bdd = child_bdds[select_idx];
-      assert(out_bdds[0] == NULL);
-      out_bdds[0] = bit_bdd;
-      ATTACH_REF(out_bdds[0]);
+      assert(result_bdds[0] == NULL);
+      result_bdds[0] = bit_bdd;
+      ATTACH_REF(result_bdds[0]);
       break;
     }
     case BV_POLY: {
@@ -1192,21 +1222,21 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
       BDD** tmp = bdd_manager_get_bdds(cudd->bddm, tmp_v);
       BDD** const_bdds = tmp;
       BDD** mult_bdds = tmp + t_bitsize;
-      bdds_mk_zero(cudd, out_bdds, t_bitsize);
+      bdds_mk_zero(cudd, result_bdds, t_bitsize);
       bvpoly_t* p = bvpoly_term_desc(terms, t);
       for (uint32_t i = 0, child_i = 0; i < p->nterms; ++ i) {
         uint32_t* c = p->mono[i].coeff;
         bdds_mk_constant_raw(cudd, const_bdds, t_bitsize, c);
         if (p->mono[i].var == const_idx) {
           // Just constant: out += c
-          bdds_mk_plus_in_place(cudd, out_bdds, const_bdds, NULL, t_bitsize, 0);
+          bdds_mk_plus_in_place(cudd, result_bdds, const_bdds, NULL, t_bitsize, 0);
           bdds_clear(cudd, const_bdds, t_bitsize);
           continue;
         } else {
           // Non constant: out += c*x
           BDD** child_bdds = ((BDD**)children_bdds->data[child_i]);
           bdds_mk_mult(cudd, mult_bdds, child_bdds, const_bdds, t_bitsize);
-          bdds_mk_plus_in_place(cudd, out_bdds, mult_bdds, NULL, t_bitsize, 0);
+          bdds_mk_plus_in_place(cudd, result_bdds, mult_bdds, NULL, t_bitsize, 0);
           bdds_clear(cudd, const_bdds, t_bitsize);
           bdds_clear(cudd, mult_bdds, t_bitsize);
           ++ child_i;
@@ -1221,21 +1251,21 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
       BDD** tmp = bdd_manager_get_bdds(cudd->bddm, tmp_v);
       BDD** const_bdds = tmp;
       BDD** mult_bdds = tmp + t_bitsize;
-      bdds_mk_zero(cudd, out_bdds, t_bitsize);
+      bdds_mk_zero(cudd, result_bdds, t_bitsize);
       bvpoly64_t* p = bvpoly64_term_desc(terms, t);
       for (uint32_t i = 0, child_i = 0; i < p->nterms; ++ i) {
         uint64_t c = p->mono[i].coeff;
         bdds_mk_constant_64(cudd, const_bdds, t_bitsize, c);
         if (p->mono[i].var == const_idx) {
           // Just constant: out += c
-          bdds_mk_plus_in_place(cudd, out_bdds, const_bdds, NULL, t_bitsize, 0);
+          bdds_mk_plus_in_place(cudd, result_bdds, const_bdds, NULL, t_bitsize, 0);
           bdds_clear(cudd, const_bdds, t_bitsize);
           continue;
         } else {
           // Non constant: out += c*x
           BDD** child_bdds = ((BDD**)children_bdds->data[child_i]);
           bdds_mk_mult(cudd, mult_bdds, child_bdds, const_bdds, t_bitsize);
-          bdds_mk_plus_in_place(cudd, out_bdds, mult_bdds, NULL, t_bitsize, 0);
+          bdds_mk_plus_in_place(cudd, result_bdds, mult_bdds, NULL, t_bitsize, 0);
           bdds_clear(cudd, const_bdds, t_bitsize);
           bdds_clear(cudd, mult_bdds, t_bitsize);
           ++ child_i;
@@ -1247,14 +1277,14 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
     case POWER_PRODUCT: {
       bddvec_t mult_bdds_v = bdd_manager_new_vec(cudd->bddm, t_bitsize);
       BDD** mult_bdds = bdd_manager_get_bdds(cudd->bddm, mult_bdds_v);
-      bdds_mk_one(cudd, out_bdds, t_bitsize);
+      bdds_mk_one(cudd, result_bdds, t_bitsize);
       pprod_t* t_pprod = pprod_term_desc(terms, t);
       for (uint32_t i = 0; i < t_pprod->len; ++ i) {
         uint32_t exp = t_pprod->prod[i].exp;
         BDD** child_bdds = ((BDD**)children_bdds->data[i]);
         for (uint32_t d = 0; d < exp; ++ d) {
-          bdds_mk_mult(cudd, mult_bdds, out_bdds, child_bdds, t_bitsize);
-          bdds_swap(mult_bdds, out_bdds, t_bitsize);
+          bdds_mk_mult(cudd, mult_bdds, result_bdds, child_bdds, t_bitsize);
+          bdds_swap(mult_bdds, result_bdds, t_bitsize);
           bdds_clear(cudd, mult_bdds, t_bitsize);
         }
       }
@@ -1263,7 +1293,7 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
     }
     case OR_TERM: {
       assert(children_bdds->size == or_term_desc(terms, t)->arity);
-      bdds_mk_bool_or(cudd, out_bdds, children_bdds);
+      bdds_mk_bool_or(cudd, result_bdds, children_bdds);
       break;
     }
     case EQ_TERM: // Boolean equality
@@ -1275,7 +1305,8 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
       t0 = (BDD**) children_bdds->data[0];
       t1 = (BDD**) children_bdds->data[1];
       // Make by hand, so that we can optimize
-      bdds_mk_eq(cudd, out_bdds, t0, t1, child_bitsize);
+      bdd_manager_delete_vec(cudd->bddm, result_v);
+      result_v = bdds_mk_eq_manual(cudd, t0, t1, child_bitsize);
       break;
     }
     case BV_GE_ATOM: {
@@ -1285,7 +1316,7 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
       uint32_t child_bitsize = bv_term_bitsize(terms, child);
       t0 = (BDD**) children_bdds->data[0];
       t1 = (BDD**) children_bdds->data[1];
-      bdds_mk_ge(cudd, out_bdds, t0, t1, child_bitsize);
+      bdds_mk_ge(cudd, result_bdds, t0, t1, child_bitsize);
       break;
     }
     case BV_SGE_ATOM: {
@@ -1295,7 +1326,7 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
       uint32_t child_bitsize = bv_term_bitsize(terms, child);
       t0 = (BDD**) children_bdds->data[0];
       t1 = (BDD**) children_bdds->data[1];
-      bdds_mk_sge(cudd, out_bdds, t0, t1, child_bitsize);
+      bdds_mk_sge(cudd, result_bdds, t0, t1, child_bitsize);
       break;
     }
     default:
@@ -1305,7 +1336,7 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
     }
   }
 
-  return result;
+  return result_v;
 }
 
 void bdds_mk_ge(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
@@ -1459,36 +1490,30 @@ void bdds_disjoint_set_add(CUDD* cudd, BDD** a, uint32_t n, pvector_t* set) {
   uint32_t a_i, set_i;
   bool done = false;
 
-  assert(set->size > 0);
   assert(n > 0);
 
   BDD* bdd0 = Cudd_ReadLogicZero(cudd->cudd);
   BDD* bdd1 = Cudd_ReadOne(cudd->cudd);
 
-  // Special case: a[0] == true, do nothing
-  if (a[0] == bdd1) {
-    assert(n == 1);
-    return;
+  // Special case a[i] == false, do empty set
+  for (a_i = 0; a_i < n; ++ a_i) {
+    if (a[a_i] == bdd0) {
+      bdds_clear(cudd, (BDD**) set->data, set->size);
+      pvector_reset(set);
+      pvector_push(set, bdd0);
+      ATTACH_REF(bdd0);
+      return;
+    }
   }
 
   // Special case set[0] = false, do nothing
-  if (set->data[0] == bdd0) {
+  if (set->size > 0 && set->data[0] == bdd0) {
     assert(set->size == 1);
     return;
   }
 
-  // Special case a[0] == false, do empty set
-  if (a[0] == bdd0) {
-    assert(n == 1);
-    bdds_clear(cudd, (BDD**) set->data, set->size);
-    pvector_reset(set);
-    pvector_push(set, bdd0);
-    ATTACH_REF(bdd0);
-    return;
-  }
-
   // Special case set[0] = true, remove it and just keep adding a
-  if (set->data[0] == bdd1) {
+  if (set->size > 0 && set->data[0] == bdd1) {
     assert(set->size == 1);
     bdds_clear(cudd, (BDD**) set->data, set->size);
     pvector_reset(set);
@@ -1500,6 +1525,10 @@ void bdds_disjoint_set_add(CUDD* cudd, BDD** a, uint32_t n, pvector_t* set) {
   // separately to ensure that T/F are size 1 vectors.
   for (a_i = 0; !done && a_i < n; ++ a_i) {
     BDD* to_add = a[a_i];
+    // Special case: a[i] == true, do nothing
+    if (a[a_i] == bdd1) {
+      continue;
+    }
     assert(to_add != bdd0 && to_add != bdd1);
     ATTACH_REF(to_add); // attach, we're copying
     for (set_i = 0; !done && set_i < set->size;) {
@@ -1535,5 +1564,10 @@ void bdds_disjoint_set_add(CUDD* cudd, BDD** a, uint32_t n, pvector_t* set) {
     pvector_push(set, to_add);
   }
 
-  assert(set->size > 0);
+  // Empty set, just set as true
+  if (set->size == 0) {
+    pvector_push(set, bdd1);
+    ATTACH_REF(bdd1);
+
+  }
 }

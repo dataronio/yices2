@@ -337,7 +337,7 @@ BDD** bdd_manager_get_bdds_same_size(bdd_manager_t* bddm, term_t t) {
       BDD** old_bdds = bddvec_manager_get_bdds(&bddm->bdds, old_v);
       BDD** new_bdds = bddvec_manager_get_bdds(&bddm->bdds, new_v);
       bdds_mk_conjunction(bddm->cudd, new_bdds, old_bdds, old_v.size);
-      bddvec_manager_delete_vec(&bddm->bdds, old_v);
+      bdd_manager_delete_vec(bddm, old_v);
       t_info->v = new_v;
     }
     return bddvec_manager_get_bdds(&bddm->bdds, t_info->v);
@@ -1141,7 +1141,17 @@ void bdd_manager_delete_vec(bdd_manager_t* bddm, bddvec_t v) {
   bddvec_manager_delete_vec(&bddm->bdds, v);
 }
 
-bddvec_t bdd_manager_new_copy(bdd_manager_t* bddm, bddvec_t v) {
+bddvec_t bdd_manager_new_vec_from(bdd_manager_t* bddm, BDD** bdds, uint32_t n) {
+  assert(bdds != NULL);
+  bddvec_t result = bddvec_manager_new_vec(&bddm->bdds, n);
+  BDD** result_bdds = bddvec_manager_get_bdds(&bddm->bdds, result);
+  for (uint32_t i = 0; i < n; ++ i) {
+    result_bdds[i] = bdds[i];
+  }
+  return result;
+}
+
+bddvec_t bdd_manager_new_vec_copy(bdd_manager_t* bddm, bddvec_t v) {
   if (v.id == bddvec_null_id) return v;
   bddvec_t result = bddvec_manager_new_vec(&bddm->bdds, v.size);
   BDD** v_bdds = bddvec_manager_get_bdds(&bddm->bdds, v);

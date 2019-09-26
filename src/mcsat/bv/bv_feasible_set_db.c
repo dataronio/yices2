@@ -316,7 +316,7 @@ bool bv_feasible_set_db_update(bv_feasible_set_db_t* db, variable_t x, bddvec_t 
   } else {
     // intersect = new_set, we need to increase reference count for
     // the intersect
-    intersect = bdd_manager_new_copy(db->bddm, new_set);
+    intersect = bdd_manager_new_vec_copy(db->bddm, new_set);
   }
 
   // Are we feasible
@@ -472,7 +472,7 @@ void bv_feasible_set_quickxplain(const bv_feasible_set_db_t* db, bddvec_t curren
   uint32_t n = (end - begin) / 2;
 
   // Assert first half and minimize the second
-  bddvec_t feasible_A = bdd_manager_new_copy(bddm, current);
+  bddvec_t feasible_A = bdd_manager_new_vec_copy(bddm, current);
   for (i = begin; i < begin + n; ++ i) {
     bddvec_t feasible_i = db->memory[reasons->data[i]].reason_feasible_set;
     bddvec_t intersect = bdd_manager_intersect(bddm, feasible_A, feasible_i);
@@ -484,7 +484,7 @@ void bv_feasible_set_quickxplain(const bv_feasible_set_db_t* db, bddvec_t curren
   bdd_manager_delete_vec(bddm, feasible_A);
 
   // Now, assert the minimized second half, and minimize the first half
-  bddvec_t feasible_B = bdd_manager_new_copy(bddm, current);
+  bddvec_t feasible_B = bdd_manager_new_vec_copy(bddm, current);
   for (i = old_out_size; i < out->size; ++ i) {
     bddvec_t feasible_i = db->memory[out->data[i]].reason_feasible_set;
     bddvec_t intersect = bdd_manager_intersect(bddm, feasible_B, feasible_i);
