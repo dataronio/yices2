@@ -107,5 +107,5 @@ bool bdd_manager_is_empty(const bdd_manager_t* bddm, bddvec_t v);
 /** Check whether the given BDD represents one solution. */
 bool bdd_manager_is_point(const bdd_manager_t* bddm, bddvec_t bdd, uint32_t bitsize);
 
-/** Intersect the two BDDs (result attached) */
+/** Intersect the two Boolean BDDs (result attached) */
 bddvec_t bdd_manager_intersect(bdd_manager_t* bddm, bddvec_t v1, bddvec_t v2);

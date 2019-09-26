@@ -248,6 +248,9 @@ struct bdd_manager_s {
 
   /** BDD constant true in vector form */
   bddvec_t bdd_true_v;
+
+  /** Temporaray BDD storage */
+  pvector_t bdd_temp;
 };
 
 /** Delete all BDD info (constant, and the BDDs allocated) */
@@ -290,6 +293,8 @@ bdd_manager_t* bdd_manager_new(const plugin_context_t* ctx) {
   bddm->bdd_true_v = bddvec_manager_new_vec(&bddm->bdds, 1);
   BDD** bdd_true_v_bdds = bddvec_manager_get_bdds(&bddm->bdds, bddm->bdd_true_v);
   bdd_true_v_bdds[0] = bddm->bdd_true;
+
+  init_pvector(&bddm->bdd_temp, 0);
 
   return bddm;
 }
@@ -375,6 +380,8 @@ void bdd_manager_delete(bdd_manager_t* bddm) {
   bdds_clear(cudd, &bddm->bdd_true, 1);
 
   bdds_delete(cudd);
+
+  delete_pvector(&bddm->bdd_temp);
 
   safe_free(bddm->term_info);
   safe_free(bddm);
@@ -1199,108 +1206,49 @@ bool bdd_manager_is_point(const bdd_manager_t* bddm, bddvec_t v, uint32_t bitsiz
  */
 bddvec_t bdd_manager_intersect(bdd_manager_t* bddm, bddvec_t v1, bddvec_t v2) {
 
-  uint32_t i, j;
-
-//  static int count = 0;
-//  count ++;
-//  if (count == 11) {
-//    fprintf(stderr, "here\n");
-//  }
-
   CUDD* cudd = bddm->cudd;
-  bool done = false;
 
-  pvector_t output_bdds;
-  init_pvector(&output_bdds, 0);
+  BDD** v1_bdds = bddvec_manager_get_bdds(&bddm->bdds, v1);
+  BDD** v2_bdds = bddvec_manager_get_bdds(&bddm->bdds, v2);
+
+  pvector_t* result_bdds_tmp = &bddm->bdd_temp;
+  assert(result_bdds_tmp->size == 0);
 
   // Just copy over v1 BDDs (and attach, we're copying)
-  BDD** v1_bdds = bddvec_manager_get_bdds(&bddm->bdds, v1);
-  for (i = 0; !done && i < v1.size; ++ i) {
+  bool is_false = false;
+  for (uint32_t i = 0; !is_false && i < v1.size; ++ i) {
     BDD* bdd = v1_bdds[i];
     if (bdd == bddm->bdd_false) {
-      assert(v1.size == 1);
-      done = true;
+      assert(v1.size == 1); // can be only false, we still add but we're done
+      is_false = true;
     }
-    if (bdd == bddm->bdd_true) {
-      continue;
-    }
-    pvector_push(&output_bdds, bdd);
+    assert(bdd != bddm->bdd_true || v1.size == 1); // can be only true, we still add
+    pvector_push(result_bdds_tmp, bdd);
   }
-  bdds_attach((BDD**) output_bdds.data, output_bdds.size);
+  bdds_attach((BDD**) result_bdds_tmp->data, result_bdds_tmp->size);
 
-  // Now add the v2 BDDs. For each v2 BDD go through output_bdds and
-  // see if they are disjoint. If yes, then we skip it. If not we need
-  // to intersect it and continue with the intersection.
-  BDD** v2_bdds = bddvec_manager_get_bdds(&bddm->bdds, v2);
-  for (i = 0; !done && i < v2.size; ++ i) {
-    BDD* to_add = v2_bdds[i];
-    if (to_add == bddm->bdd_true) {
-      // No need to add true
-      j ++;
-      continue;
-    }
-    bdds_attach(&to_add, 1); // attach, we're copying
-    if (to_add == bddm->bdd_false) {
-      // intersecting with false, just return false
-      bdds_clear(cudd, (BDD**) output_bdds.data, output_bdds.size);
-      pvector_reset(&output_bdds);
-      done = true;
-    } else {
-      for (j = 0; !done && j < output_bdds.size;) {
-        // The BDD to_add is disjoint from all BDDs at positions < j
-        BDD* current = (BDD*) output_bdds.data[j];
-        if (bdds_are_disjoint(cudd, to_add, current)) {
-          // Disjoint, we can continue
-          j ++;
-          continue;
-        }
-        // Not disjoint, we intersect with the current one and keep going with
-        // the intersection
-        BDD* conjunction = NULL;
-        bdds_mk_and(cudd, &conjunction, &current, &to_add, 1);
-        // result one now becomes current
-        bdds_clear(cudd, &to_add, 1);
-        to_add = conjunction;
-        if (to_add == bddm->bdd_false) {
-          // just return the false BDD
-          bdds_clear(cudd, (BDD**) output_bdds.data, output_bdds.size);
-          pvector_reset(&output_bdds);
-          done = true;
-        } else if (j + 1 < output_bdds.size) {
-          // shrink the vector by moving the last one into position
-          bdds_clear(cudd, &current, 1);
-          output_bdds.data[j] = pvector_pop2(&output_bdds);
-        } else {
-          // no more, just replace the current one
-          bdds_clear(cudd, &current, 1);
-          pvector_pop2(&output_bdds);
-          done = true;
-        }
-      }
-    }
-    pvector_push(&output_bdds, to_add);
+  if (!is_false) {
+    bdds_disjoint_set_add(cudd, v2_bdds, v2.size, result_bdds_tmp);
   }
 
   // Allocate the BDD vector and copy over the BDDs
-  if (output_bdds.size == 0) {
-    pvector_push(&output_bdds, bddm->bdd_true);
-    bdds_attach(&bddm->bdd_true, 1);
-  }
-  bddvec_t result = bddvec_manager_new_vec(&bddm->bdds, output_bdds.size);
+  assert(result_bdds_tmp->size > 0);
+  bddvec_t result = bddvec_manager_new_vec(&bddm->bdds, result_bdds_tmp->size);
   BDD** result_bdds = bddvec_manager_get_bdds(&bddm->bdds, result);
-  for (i = 0; i < output_bdds.size; ++ i) {
-    assert(output_bdds.data[i] != NULL);
-    result_bdds[i] = output_bdds.data[i];
+  for (uint32_t i = 0; i < result_bdds_tmp->size; ++ i) {
+    assert(result_bdds_tmp->data[i] != NULL);
+    result_bdds[i] = result_bdds_tmp->data[i];
+    assert(result_bdds[i] != bddm->bdd_true || result_bdds_tmp->size == 1);
+    assert(result_bdds[i] != bddm->bdd_false|| result_bdds_tmp->size == 1);
   }
 
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd::intersect")) {
     ctx_trace_printf(bddm->ctx, "intersect result:\n");
-    bdds_print(bddm->cudd, (BDD**) output_bdds.data, output_bdds.size, ctx_trace_out(bddm->ctx));
+    bdd_manager_print_bddvec(bddm, result, ctx_trace_out(bddm->ctx));
     ctx_trace_printf(bddm->ctx, "\n");
   }
 
-  // Remove temp
-  delete_pvector(&output_bdds);
+  pvector_reset(result_bdds_tmp);
 
   return result;
 }

@@ -72,6 +72,9 @@ void bdds_delete(CUDD* cudd);
 /**
  * Given the term and BDDs of all the children compute the BDDs into
  * the output.
+ *
+ * The vector children_bdds contains a pointer for each child. The pointer
+ * is of the type BDD** and is of the same size as the term children.
  */
 bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvector_t* children_bdds);
 
@@ -198,3 +201,6 @@ void bdds_mk_ge(CUDD* cudd, BDD** out_bdds, BDD** a, BDD** b, uint32_t n);
 
 /** Signed comparison circuit of BDDs in a and b, out is of n 1. */
 void bdds_mk_sge(CUDD* cudd, BDD** out_bdds, BDD** a, BDD** b, uint32_t n);
+
+/** Add BDDs in to_add to a conjunction of disjoint BDDs. */
+void bdds_disjoint_set_add(CUDD* cudd, BDD** a, uint32_t n, pvector_t* disjoint_set);

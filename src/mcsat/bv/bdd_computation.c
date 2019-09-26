@@ -1475,3 +1475,85 @@ void bdds_get_model(CUDD* cudd, BDD** x, BDD* C_x, bvconstant_t* out) {
   }
 }
 
+void bdds_disjoint_set_add(CUDD* cudd, BDD** a, uint32_t n, pvector_t* set) {
+  uint32_t a_i, set_i;
+  bool done = false;
+
+  assert(set->size > 0);
+  assert(n > 0);
+
+  BDD* bdd0 = Cudd_ReadLogicZero(cudd->cudd);
+  BDD* bdd1 = Cudd_ReadOne(cudd->cudd);
+
+  // Special case: a[0] == true, do nothing
+  if (a[0] == bdd1) {
+    assert(n == 1);
+    return;
+  }
+
+  // Special case set[0] = false, do nothing
+  if (set->data[0] == bdd0) {
+    assert(set->size == 1);
+    return;
+  }
+
+  // Special case a[0] == false, do empty set
+  if (a[0] == bdd0) {
+    assert(n == 1);
+    bdds_clear(cudd, (BDD**) set->data, set->size);
+    pvector_reset(set);
+    pvector_push(set, bdd0);
+    ATTACH_REF(bdd0);
+    return;
+  }
+
+  // Special case set[0] = true, remove it and just keep adding a
+  if (set->data[0] == bdd1) {
+    assert(set->size == 1);
+    bdds_clear(cudd, (BDD**) set->data, set->size);
+    pvector_reset(set);
+  }
+
+  // Add the BDDs from a. For each BDD go through set and see if they are
+  // disjoint. If yes, then we skip it. If not we need to intersect it and
+  // continue with the intersection. True and false constants are treated
+  // separately to ensure that T/F are size 1 vectors.
+  for (a_i = 0; !done && a_i < n; ++ a_i) {
+    BDD* to_add = a[a_i];
+    assert(to_add != bdd0 && to_add != bdd1);
+    ATTACH_REF(to_add); // attach, we're copying
+    for (set_i = 0; !done && set_i < set->size;) {
+      // The BDD to_add is disjoint from all BDDs in set at positions < j
+      BDD* set_i_bdd = (BDD*) set->data[set_i];
+      assert(set_i_bdd != bdd0 && set_i_bdd != bdd1);
+      // If to_add is disjoint from set[j], we can continue
+      if (bdds_are_disjoint(cudd, to_add, set_i_bdd)) {
+        // Disjoint, we can continue
+        set_i ++;
+        continue;
+      }
+      // If to_add is not disjoint from set[j], we intersect with it and keep
+      // going with the rest of the set
+      BDD* conjunction = Cudd_bddAnd(cudd->cudd, set_i_bdd, to_add);
+      ATTACH_REF(conjunction);
+      DETACH_REF(cudd->cudd, to_add);
+      to_add = conjunction;
+      if (to_add == bdd0) {
+        // just return the false BDD
+        bdds_clear(cudd, (BDD**) set->data, set->size);
+        pvector_reset(set);
+        done = true;
+      } else {
+        // Shrink the vector by moving the last one into position j. If
+        // no such element, then we're done with adding this element
+        DETACH_REF(cudd->cudd, set_i_bdd);
+        BDD* last = pvector_pop2(set);
+        if (set_i < set->size) { set->data[set_i] = last; }
+      }
+    }
+    // We have a BDD disjoint from everything in set
+    pvector_push(set, to_add);
+  }
+
+  assert(set->size > 0);
+}
