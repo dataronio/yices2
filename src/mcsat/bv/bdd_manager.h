@@ -92,6 +92,9 @@ void bdd_manager_delete_vec(bdd_manager_t* bddm, bddvec_t v);
 /** Make a copy of the given vector, returns attached version */
 bddvec_t bdd_manager_new_copy(bdd_manager_t* bddm, bddvec_t v);
 
+/** Make a new BDD vector of given size (all NULL) */
+bddvec_t bdd_manager_new_vec(bdd_manager_t* bddm, uint32_t size);
+
 /** Attach a BDD vector */
 void bdd_manager_attach(bdd_manager_t* bddm, bddvec_t v);
 

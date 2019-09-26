@@ -894,9 +894,6 @@ void bdd_manager_compute_bdd(bdd_manager_t* bddm, term_t t) {
   // Remove all previous BDDs and make a new ones
   bdd_manager_delete_vec(bddm, t_info->v);
 
-  pvector_t out_bdds;
-  init_pvector(&out_bdds, 0);
-
   // Negation
   if (is_neg_term(t)) {
     t_i = unsigned_term(t);
@@ -972,24 +969,15 @@ void bdd_manager_compute_bdd(bdd_manager_t* bddm, term_t t) {
   }
 
   // We have the children values compute
-  bdds_compute_bdds(bddm->cudd, terms, t, &children_bdds, &out_bdds);
+  t_info->v = bdds_compute_bdds(bddm->cudd, terms, t, &children_bdds);
 
   if (ctx_trace_enabled(bddm->ctx, "mcsat::bv::bdd")) {
     ctx_trace_printf(bddm->ctx, "bdd_manager: BDD done for ");
     ctx_trace_term(bddm->ctx, t);
   }
 
-
-  // Create the new bdd vector and copy over the BDDs
-  t_info->v = bddvec_manager_new_vec(&bddm->bdds, out_bdds.size);
-  BDD** t_bdds = bddvec_manager_get_bdds(&bddm->bdds, t_info->v);
-  for (uint32_t i = 0; i < out_bdds.size; ++ i) {
-    t_bdds[i] = out_bdds.data[i]; // already attached
-  }
-
   // Remove temp
   delete_pvector(&children_bdds);
-  delete_pvector(&out_bdds);
 }
 
 static
@@ -1156,6 +1144,10 @@ bddvec_t bdd_manager_new_copy(bdd_manager_t* bddm, bddvec_t v) {
   }
   bdds_attach(result_bdds, v.size);
   return result;
+}
+
+bddvec_t bdd_manager_new_vec(bdd_manager_t* bddm, uint32_t size) {
+  return bddvec_manager_new_vec(&bddm->bdds, size);
 }
 
 void bdd_manager_attach(bdd_manager_t* bddm, bddvec_t v) {

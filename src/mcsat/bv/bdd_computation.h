@@ -71,10 +71,9 @@ void bdds_delete(CUDD* cudd);
 
 /**
  * Given the term and BDDs of all the children compute the BDDs into
- * the output. The out_bdds should be initialized to NULL.
+ * the output.
  */
-void bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t,
-    const pvector_t* children_bdds, pvector_t* out_bdds);
+bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvector_t* children_bdds);
 
 /** Initialize: set all to NULL. */
 void bdds_init(BDD** a, uint32_t n);

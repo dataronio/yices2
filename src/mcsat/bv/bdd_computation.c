@@ -9,6 +9,7 @@
 #include "bv_utils.h"
 
 #include "terms/bv64_constants.h"
+#include "bdd_manager.h"
 
 // will output attachment data, you can get the counts with
 //   |& grep tach | sort | uniq -c
@@ -1119,8 +1120,7 @@ void bdds_mk_smod(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
   bdds_remove_reserve(cudd, tmp_size);
 }
 
-void bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t,
-    const pvector_t* children_bdds, pvector_t* out) {
+bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvector_t* children_bdds) {
 
   assert(bv_term_has_children(terms, t));
 
@@ -1129,11 +1129,8 @@ void bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t,
 
   // Default, just make the same size
   uint32_t t_bitsize = bv_term_bitsize(terms, t);
-  assert(out->size == 0);
-  for (uint32_t i = 0; i < t_bitsize; ++ i) {
-    pvector_push(out, NULL);
-  }
-  BDD** out_bdds = (BDD**) out->data;
+  bddvec_t result = bdd_manager_new_vec(cudd->bddm, t_bitsize);
+  BDD** out_bdds = bdd_manager_get_bdds(cudd->bddm, result);
 
   if (is_neg_term(t)) {
     // Negation
@@ -1327,6 +1324,8 @@ void bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t,
       break;
     }
   }
+
+  return result;
 }
 
 void bdds_mk_ge(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
