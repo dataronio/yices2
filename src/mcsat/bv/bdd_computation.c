@@ -87,8 +87,9 @@ static void cudd_out_of_mem(size_t s) {
   out_of_memory();
 }
 
-CUDD* bdds_new() {
+CUDD* bdds_new(bdd_manager_t* bddm) {
   CUDD* cudd = (CUDD*) safe_malloc(sizeof(CUDD));
+  cudd->bddm = bddm;
   cudd->cudd = Cudd_Init(0, 0, CUDD_UNIQUE_SLOTS, CUDD_CACHE_SLOTS,0);
   (void) Cudd_RegisterOutOfMemoryCallback(cudd->cudd, cudd_out_of_mem);
   //  Cudd_AutodynDisable(cudd->cudd);

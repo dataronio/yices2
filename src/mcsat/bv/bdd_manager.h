@@ -24,9 +24,7 @@
 #include "terms/bv_constants.h"
 #include "mcsat/mcsat_types.h"
 
-// TODO:
-// 1. Memory for caching the BDDs, this can be reused per term, no need to be stingy
-// 2.
+#include "bdd_computation.h"
 
 /**
  * Structure responsible for all BDD interactions.
@@ -37,32 +35,9 @@
  * - create bdd's for terms that are unit over added variables
  * - compute with bdd's (e.g., and)
  * - pick bit-vector value from a BDD
+ * - allocate/deallocate new temporary BDDs that you need
  */
 typedef struct bdd_manager_s bdd_manager_t;
-
-/**
- * Reference for BDD vectors. The id only makes sense in combination with
- * list size.
- */
-typedef uint32_t bddvec_id_t;
-
-/** Null vector ID */
-extern const bddvec_id_t bddvec_null_id;
-
-/** BDD vector managed by the BDD vector manager */
-typedef struct bddvec_s {
-  uint32_t size;
-  bddvec_id_t id;
-} bddvec_t;
-
-/** Actual null vector */
-extern const bddvec_t bddvec_null;
-
-/** Swap the two BDDs */
-static inline
-void bddvec_swap(bddvec_t* x, bddvec_t* y) {
-  bddvec_t tmp = *x; *x = *y; *y = tmp;
-}
 
 /** Create a new BDD manager (allocate and construct) */
 bdd_manager_t* bdd_manager_new(const plugin_context_t* ctx);
@@ -98,6 +73,9 @@ void bdd_manager_set_bool_value(bdd_manager_t* bddm, term_t t, bool value);
  * @return bdds a BDD vector (conjunction) representing the constraint [refcount attached]
  */
 bddvec_t bdd_manager_get(bdd_manager_t* bddm, term_t bv_literal, term_t x);
+
+/** Get the actuall BDDs of the vector (use with care, and changes to m migth reallocate) */
+BDD** bdd_manager_get_bdds(const bdd_manager_t* bddm, bddvec_t v);
 
 /** Pick a value for a given variable x that satisfies the given v = BDD(x). */
 void bdd_manager_pick_value(bdd_manager_t* bddm, term_t x, bddvec_t v, bvconstant_t* out);

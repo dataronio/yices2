@@ -29,43 +29,48 @@
 #include "mcsat/plugin.h"
 #include "mcsat/tracing.h"
 
+#define BDDVEC_ALLOCATOR_VECTORS_PER_CHUNK 100
+
 /** Manage fixed size allocations */
 typedef struct bddvec_allocator_s {
   /** Size of the bitvector */
   uint32_t vec_size;
   /** Memory for the BDDs */
-  BDD** bdds;
-  /** Size of the BDD memory */
-  uint32_t bdds_size;
-  /** Allocated BDD memory */
-  uint32_t bdds_allocated;
+  pvector_t chunks;
   /** List of free id's */
   ivector_t free_list;
+  /** Top id */
+  bddvec_id_t next_to_allocate;
 } bddvec_allocator_t;
 
 void bddvec_allocator_construct(bddvec_allocator_t* m, uint32_t size) {
   m->vec_size = size;
-  m->bdds = NULL;
-  m->bdds_size = 0;
-  m->bdds_allocated = 0;
+  m->next_to_allocate = 0;
+  init_pvector(&m->chunks, 0);
   init_ivector(&m->free_list, 0);
 }
 
 void bddvec_allocator_destruct(bddvec_allocator_t* m) {
   delete_ivector(&m->free_list);
-  safe_free(m->bdds);
+  for (uint32_t i = 0; i < m->chunks.size; ++ i) {
+    BDD** bdds_i = (BDD**) m->chunks.data[i];
+    safe_free(bdds_i);
+  }
+  delete_pvector(&m->chunks);
 }
 
 BDD** bddvec_allocator_get(bddvec_allocator_t* m, bddvec_id_t id) {
-  assert(m->vec_size*id + m->vec_size <= m->bdds_size);
-  return m->bdds + m->vec_size*id;
+  uint32_t chunk_i = id / BDDVEC_ALLOCATOR_VECTORS_PER_CHUNK;
+  uint32_t i = id % BDDVEC_ALLOCATOR_VECTORS_PER_CHUNK;
+  assert(chunk_i < m->chunks.size);
+  BDD** bdds = ((BDD**) m->chunks.data[chunk_i]) + (i*m->vec_size);
+  return bdds;
 }
 
 void bddvec_allocator_delete_vec(bddvec_allocator_t* m, bddvec_id_t id) {
-  uint32_t start = m->vec_size * id;
-  uint32_t end = start + m->vec_size;
-  for (uint32_t i = start; i < end; ++ i) {
-    m->bdds[i] = NULL;
+  BDD** bdds = bddvec_allocator_get(m, id);
+  for (BDD** i = bdds; i != bdds + m->vec_size; ++ i) {
+    *i = NULL;
   }
   ivector_push(&m->free_list, id);
 }
@@ -79,20 +84,18 @@ bddvec_id_t bddvec_allocator_new_vec(bddvec_allocator_t* m) {
     result = ivector_pop2(&m->free_list);
   } else {
     // New id is at the end
-    result = m->bdds_size / m->vec_size;
-    m->bdds_size += m->vec_size;
-
-    // Make sure enough is allocated
-    while (m->bdds_size > m->bdds_allocated) {
-      uint32_t old_allocated = m->bdds_allocated;
-      m->bdds_allocated += (1 + (old_allocated >> 1))*m->vec_size;
-      m->bdds = safe_realloc(m->bdds, m->bdds_allocated * sizeof(BDD*));
-      for (; old_allocated < m->bdds_allocated; old_allocated ++) {
-        m->bdds[old_allocated] = NULL;
+    result = m->next_to_allocate ++;
+    // Check if we need a new chunk
+    uint32_t chunk_i = result / BDDVEC_ALLOCATOR_VECTORS_PER_CHUNK;
+    if (chunk_i == m->chunks.size) {
+      uint32_t bdds_in_chunk = m->vec_size * BDDVEC_ALLOCATOR_VECTORS_PER_CHUNK;
+      BDD** new_chunk = safe_malloc(sizeof(BDD*) * bdds_in_chunk);
+      for (BDD** bdd = new_chunk; bdd != new_chunk + bdds_in_chunk; ++ bdd) {
+        *bdd = NULL;
       }
+      pvector_push(&m->chunks, new_chunk);
     }
   }
-
   return result;
 }
 
@@ -258,7 +261,7 @@ bdd_manager_t* bdd_manager_new(const plugin_context_t* ctx) {
   bdd_manager_t* bddm = (bdd_manager_t*) safe_malloc(sizeof(bdd_manager_t));
 
   bddm->ctx= ctx;
-  bddm->cudd = bdds_new();
+  bddm->cudd = bdds_new(bddm);
   bddm->term_info = NULL;
   bddm->term_info_size = 0;
   bddm->term_info_capacity = 0;
@@ -1126,6 +1129,10 @@ bddvec_t bdd_manager_get(bdd_manager_t* bddm, term_t t, term_t x) {
   return result;
 }
 
+BDD** bdd_manager_get_bdds(const bdd_manager_t* bddm, bddvec_t v) {
+  return bddvec_manager_get_bdds(&bddm->bdds, v);
+}
+
 void bdd_manager_detach(bdd_manager_t* bddm, bddvec_t v) {
   if (v.id == bddvec_null_id) return;
   BDD** v_bdds = bddvec_manager_get_bdds(&bddm->bdds, v);
@@ -1155,10 +1162,6 @@ void bdd_manager_attach(bdd_manager_t* bddm, bddvec_t v) {
   if (v.id == bddvec_null_id) return;
   BDD** v_bdds = bddvec_manager_get_bdds(&bddm->bdds, v);
   bdds_attach(v_bdds, v.size);
-}
-
-void bdd_manager_bdd_print(const bdd_manager_t* bddm, BDD* bdd, FILE* out) {
-  bdds_print(bddm->cudd, &bdd, 1, out);
 }
 
 void bdd_manager_print_bddvec(const bdd_manager_t* bddm, bddvec_t v, FILE* out) {

@@ -23,8 +23,39 @@ typedef DdNode BDD;
 
 #define BDDS_RESERVE_MAX 2
 
+typedef struct bdd_manager_s bdd_manager_t;
+
+/** Reference for BDD vectors. */
+typedef uint32_t bddvec_id_t;
+
+/** Null vector ID */
+extern const bddvec_id_t bddvec_null_id;
+
+/** BDD vector managed by the BDD vector manager */
+typedef struct bddvec_s {
+  uint32_t size;
+  bddvec_id_t id;
+} bddvec_t;
+
+/** Actual null vector */
+extern const bddvec_t bddvec_null;
+
+/** Swap the two BDDs */
+static inline
+void bddvec_swap(bddvec_t* x, bddvec_t* y) {
+  bddvec_t tmp = *x; *x = *y; *y = tmp;
+}
+
+/**
+ * The structure responsible for bare BDD computation. It relies on the CUDD
+ * library to perform the BDD computation.
+ *
+ * All BDD manipulating functions use the BDD manager to allocate the result.
+ * This means that the BDD manager's BDD allocations need to be invariant.
+ */
 typedef struct {
   DdManager* cudd;
+  struct bdd_manager_s* bddm;
   int* tmp_inputs;
   char* tmp_model;
   size_t tmp_alloc_size;
@@ -32,8 +63,8 @@ typedef struct {
   uint32_t reserve_i;
 } CUDD;
 
-/** Construct and allocate cudd */
-CUDD* bdds_new();
+/** Construct and allocate cudd (passed bddm will not be used in construction) */
+CUDD* bdds_new(bdd_manager_t* bddm);
 
 /** Destruct and delete cudd */
 void bdds_delete(CUDD* cudd);
