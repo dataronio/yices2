@@ -59,8 +59,6 @@ typedef struct {
   int* tmp_inputs;
   char* tmp_model;
   size_t tmp_alloc_size;
-  pvector_t reserve[BDDS_RESERVE_MAX];
-  uint32_t reserve_i;
 } CUDD;
 
 /** Construct and allocate cudd (passed bddm will not be used in construction) */

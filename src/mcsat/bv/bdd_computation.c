@@ -97,10 +97,7 @@ CUDD* bdds_new(bdd_manager_t* bddm) {
   cudd->tmp_alloc_size = 0;
   cudd->tmp_inputs = NULL;
   cudd->tmp_model = NULL;
-  for (uint32_t i = 0; i < BDDS_RESERVE_MAX; ++ i) {
-    init_pvector(&cudd->reserve[i], 0);
-  }
-  cudd->reserve_i = 0;
+
   return cudd;
 }
 
@@ -111,37 +108,7 @@ void bdds_delete(CUDD* cudd) {
   Cudd_Quit(cudd->cudd);
   safe_free(cudd->tmp_inputs);
   safe_free(cudd->tmp_model);
-  assert(cudd->reserve_i == 0);
-  for (uint32_t i = 0; i < BDDS_RESERVE_MAX; ++ i) {
-    assert(cudd->reserve[i].size == 0);
-    delete_pvector(&cudd->reserve[i]);
-  }
   safe_free(cudd);
-}
-
-BDD** bdds_allocate_reserve(CUDD* cudd, uint32_t n) {
-  assert(n > 0);
-  if (cudd->reserve[cudd->reserve_i].size > 0) {
-    cudd->reserve_i ++;
-  }
-  assert(cudd->reserve_i < BDDS_RESERVE_MAX);
-  assert(cudd->reserve[cudd->reserve_i].size == 0);
-  for (uint32_t i = 0; i < n; ++ i) {
-    pvector_push(&cudd->reserve[cudd->reserve_i], NULL);
-  }
-  return (BDD**) cudd->reserve[cudd->reserve_i].data;
-}
-
-void bdds_remove_reserve(CUDD* cudd, uint32_t n) {
-  assert(n > 0);
-  assert(cudd->reserve[cudd->reserve_i].size == n);
-  for (uint32_t i = 0; i < n; ++ i) {
-    assert(cudd->reserve[cudd->reserve_i].data[i] == NULL);
-  }
-  pvector_reset(&cudd->reserve[cudd->reserve_i]);
-  if (cudd->reserve_i > 0) {
-    cudd->reserve_i --;
-  }
 }
 
 void bdds_init(BDD** a, uint32_t n) {
@@ -465,7 +432,8 @@ void bdds_mk_shl_const(CUDD* cudd, BDD** out, BDD** a, uint32_t shift, uint32_t 
 }
 
 void bdds_mk_shl(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
-  BDD** shift_const = bdds_allocate_reserve(cudd, n);
+  bddvec_t shift_const_v = bdd_manager_new_vec(cudd->bddm, n);
+  BDD** shift_const = bdd_manager_get_bdds(cudd->bddm, shift_const_v);
   BDD* b_eq_shift_const = NULL;
 
   bdds_mk_zero(cudd, out, n);
@@ -491,11 +459,12 @@ void bdds_mk_shl(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
     bdds_clear(cudd, &b_eq_shift_const, 1);
   }
 
-  bdds_remove_reserve(cudd, n);
+  bdd_manager_delete_vec(cudd->bddm, shift_const_v);
 }
 
 void bdds_mk_lshr(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
-  BDD** shift_const = bdds_allocate_reserve(cudd, n);
+  bddvec_t shift_const_v = bdd_manager_new_vec(cudd->bddm, n);
+  BDD** shift_const = bdd_manager_get_bdds(cudd->bddm, shift_const_v);
   BDD* b_eq_shift_const = NULL;
 
   bdds_mk_zero(cudd, out, n);
@@ -521,11 +490,12 @@ void bdds_mk_lshr(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
     bdds_clear(cudd, &b_eq_shift_const, 1);
   }
 
-  bdds_remove_reserve(cudd, n);
+  bdd_manager_delete_vec(cudd->bddm, shift_const_v);
 }
 
 void bdds_mk_ashr(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
-  BDD** shift_const = bdds_allocate_reserve(cudd, n);
+  bddvec_t shift_const_v = bdd_manager_new_vec(cudd->bddm, n);
+  BDD** shift_const = bdd_manager_get_bdds(cudd->bddm, shift_const_v);
   BDD* b_eq_shift_const = NULL;
 
   bdds_mk_repeat(cudd, out, a[n-1], n);
@@ -551,7 +521,7 @@ void bdds_mk_ashr(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
     bdds_clear(cudd, &b_eq_shift_const, 1);
   }
 
-  bdds_remove_reserve(cudd, n);
+  bdd_manager_delete_vec(cudd->bddm, shift_const_v);
 }
 
 /** Make a Boolean or: a[0] || ... || a[n] */
@@ -684,11 +654,12 @@ void bdds_mk_mult_core(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
       if (j < n) {
         bdds_mk_plus_in_place(cudd, out, a, b[i], n, j);
       }
-      BDD** tmp = bdds_allocate_reserve(cudd, n);
+      bddvec_t tmp_v = bdd_manager_new_vec(cudd->bddm, n);
+      BDD** tmp = bdd_manager_get_bdds(cudd->bddm, tmp_v);
       bdds_mk_2s_complement_with_shift(cudd, tmp, a, i, n);
       bdds_mk_plus_in_place(cudd, out, tmp, b[i], n, 0);
       bdds_clear(cudd, tmp, n);
-      bdds_remove_reserve(cudd, n);
+      bdd_manager_delete_vec(cudd->bddm, tmp_v);
       // Done, we continue with j
       i = j - 1;
     } else {
@@ -726,11 +697,12 @@ void bdds_mk_mult(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
       if (b_pow > 0) {
         bdds_mk_shl_const(cudd, out, a, b_pow, n);
       } else {
-        BDD** tmp = bdds_allocate_reserve(cudd, n);
+        bddvec_t tmp_v = bdd_manager_new_vec(cudd->bddm, n);
+        BDD** tmp = bdd_manager_get_bdds(cudd->bddm, tmp_v);
         bdds_mk_shl_const(cudd, tmp, a, -b_pow, n);
         bdds_mk_2s_complement(cudd, out, tmp, n);
         bdds_clear(cudd, tmp, n);
-        bdds_remove_reserve(cudd, n);
+        bdd_manager_delete_vec(cudd->bddm, tmp_v);
       }
       return;
     }
@@ -762,7 +734,8 @@ void bdds_mk_div_rem(CUDD* cudd, BDD** out_div, BDD** out_rem, BDD** a, BDD** b,
    */
 
   uint32_t tmp_size = 2*n;
-  BDD** tmp = bdds_allocate_reserve(cudd, tmp_size);
+  bddvec_t tmp_v = bdd_manager_new_vec(cudd->bddm, tmp_size);
+  BDD** tmp = bdd_manager_get_bdds(cudd->bddm, tmp_v);
 
   BDD** a_copy = tmp; // n bits
   BDD** a_slice_sub_b = tmp + n; // n bits at most
@@ -827,7 +800,7 @@ void bdds_mk_div_rem(CUDD* cudd, BDD** out_div, BDD** out_rem, BDD** a, BDD** b,
     bdds_clear(cudd, a_copy, n);
   }
 
-  bdds_remove_reserve(cudd, tmp_size);
+  bdd_manager_delete_vec(cudd->bddm, tmp_v);
 
   DETACH_REF(cudd->cudd, zero);
   DETACH_REF(cudd->cudd, one);
@@ -874,7 +847,9 @@ void bdds_mk_sdiv(CUDD* cudd, BDD** out_bdds, BDD** a, BDD** b, uint32_t n) {
   BDD* msb_b = b[n-1];
 
   uint32_t tmp_size = 10*n;
-  BDD** tmp = bdds_allocate_reserve(cudd, tmp_size);
+
+  bddvec_t tmp_v = bdd_manager_new_vec(cudd->bddm, tmp_size);
+  BDD** tmp = bdd_manager_get_bdds(cudd->bddm, tmp_v);
 
   BDD** case00_result = tmp; // n bits
   BDD** bvneg_a = tmp + n; // n bits
@@ -974,7 +949,7 @@ void bdds_mk_sdiv(CUDD* cudd, BDD** out_bdds, BDD** a, BDD** b, uint32_t n) {
   }
 
   bdds_clear(cudd, tmp, tmp_size);
-  bdds_remove_reserve(cudd, tmp_size);
+  bdd_manager_delete_vec(cudd->bddm, tmp_v);
 }
 
 //   (bvsrem s t) abbreviates
@@ -994,7 +969,8 @@ void bdds_mk_srem(CUDD* cudd, BDD** out_bdds, BDD** a, BDD** b, uint32_t n) {
   BDD* msb_b = b[n-1];
 
   uint32_t tmp_size = 10*n;
-  BDD** tmp = bdds_allocate_reserve(cudd, tmp_size);
+  bddvec_t tmp_v = bdd_manager_new_vec(cudd->bddm, tmp_size);
+  BDD** tmp = bdd_manager_get_bdds(cudd->bddm, tmp_v);
 
   BDD** case00_result = tmp; // n bits
   BDD** bvneg_a = tmp + n; // n bits
@@ -1039,7 +1015,7 @@ void bdds_mk_srem(CUDD* cudd, BDD** out_bdds, BDD** a, BDD** b, uint32_t n) {
   DETACH_REF(cudd->cudd, case10);
   DETACH_REF(cudd->cudd, case01);
   bdds_clear(cudd, tmp, tmp_size);
-  bdds_remove_reserve(cudd, tmp_size);
+  bdd_manager_delete_vec(cudd->bddm, tmp_v);
 }
 
 //    (bvsmod s t) abbreviates
@@ -1064,7 +1040,8 @@ void bdds_mk_smod(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
   BDD* msb_b = b[n-1];
 
   uint32_t tmp_size = 11*n;
-  BDD** tmp = bdds_allocate_reserve(cudd, tmp_size);
+  bddvec_t tmp_v = bdd_manager_new_vec(cudd->bddm, tmp_size);
+  BDD** tmp = bdd_manager_get_bdds(cudd->bddm, tmp_v);
 
   // Temporary storage
   BDD** bvneg_a = tmp;
@@ -1117,7 +1094,7 @@ void bdds_mk_smod(CUDD* cudd, BDD** out, BDD** a, BDD** b, uint32_t n) {
   DETACH_REF(cudd->cudd, cond3);
   DETACH_REF(cudd->cudd, cond4);
   bdds_clear(cudd, tmp, tmp_size);
-  bdds_remove_reserve(cudd, tmp_size);
+  bdd_manager_delete_vec(cudd->bddm, tmp_v);
 }
 
 bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvector_t* children_bdds) {
@@ -1211,7 +1188,8 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
     }
     case BV_POLY: {
       uint32_t tmp_size = 2*t_bitsize;
-      BDD** tmp = bdds_allocate_reserve(cudd, tmp_size);
+      bddvec_t tmp_v = bdd_manager_new_vec(cudd->bddm, tmp_size);
+      BDD** tmp = bdd_manager_get_bdds(cudd->bddm, tmp_v);
       BDD** const_bdds = tmp;
       BDD** mult_bdds = tmp + t_bitsize;
       bdds_mk_zero(cudd, out_bdds, t_bitsize);
@@ -1234,12 +1212,13 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
           ++ child_i;
         }
       }
-      bdds_remove_reserve(cudd, tmp_size);
+      bdd_manager_delete_vec(cudd->bddm, tmp_v);
       break;
     }
     case BV64_POLY: {
       uint32_t tmp_size = 2*t_bitsize;
-      BDD** tmp = bdds_allocate_reserve(cudd, tmp_size);
+      bddvec_t tmp_v = bdd_manager_new_vec(cudd->bddm, tmp_size);
+      BDD** tmp = bdd_manager_get_bdds(cudd->bddm, tmp_v);
       BDD** const_bdds = tmp;
       BDD** mult_bdds = tmp + t_bitsize;
       bdds_mk_zero(cudd, out_bdds, t_bitsize);
@@ -1262,11 +1241,12 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
           ++ child_i;
         }
       }
-      bdds_remove_reserve(cudd, tmp_size);
+      bdd_manager_delete_vec(cudd->bddm, tmp_v);
       break;
     }
     case POWER_PRODUCT: {
-      BDD** mult_bdds = bdds_allocate_reserve(cudd, t_bitsize);
+      bddvec_t mult_bdds_v = bdd_manager_new_vec(cudd->bddm, t_bitsize);
+      BDD** mult_bdds = bdd_manager_get_bdds(cudd->bddm, mult_bdds_v);
       bdds_mk_one(cudd, out_bdds, t_bitsize);
       pprod_t* t_pprod = pprod_term_desc(terms, t);
       for (uint32_t i = 0; i < t_pprod->len; ++ i) {
@@ -1278,7 +1258,7 @@ bddvec_t bdds_compute_bdds(CUDD* cudd, term_table_t* terms, term_t t, const pvec
           bdds_clear(cudd, mult_bdds, t_bitsize);
         }
       }
-      bdds_remove_reserve(cudd, t_bitsize);
+      bdd_manager_delete_vec(cudd->bddm, mult_bdds_v);
       break;
     }
     case OR_TERM: {
