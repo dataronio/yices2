@@ -195,8 +195,8 @@ void bv_feasible_set_db_delete(bv_feasible_set_db_t* db) {
     safe_free(db->memory[i].reasons);
     bddvec_t s1 = db->memory[i].feasible_set;
     bddvec_t s2 = db->memory[i].reason_feasible_set;
-    bdd_manager_detach(db->bddm, s1);
-    bdd_manager_detach(db->bddm, s2);
+    bdd_manager_delete_vec(db->bddm, s1);
+    bdd_manager_delete_vec(db->bddm, s2);
   }
   // Delete the other stuff
   mcsat_value_destruct(&db->tmp_value);
@@ -336,8 +336,7 @@ bool bv_feasible_set_db_update(bv_feasible_set_db_t* db, variable_t x, bddvec_t 
   // Setup the element
   feasibility_list_element_t* new_element = db->memory + new_index;
   new_element->feasible_set = intersect; // Intersect attached already
-  new_element->reason_feasible_set = new_set;
-  bdd_manager_attach(bddm, new_set); // One more reference
+  new_element->reason_feasible_set = bdd_manager_new_vec_copy(db->bddm, new_set);
   new_element->prev = prev;
   // Reasons
   new_element->reasons_size = cstr_count;
@@ -412,7 +411,7 @@ void bv_feasible_set_db_pop(bv_feasible_set_db_t* db) {
     uint32_t prev = element->prev;
     // Release the BDDs
     bdd_manager_delete_vec(bddm, element->feasible_set);
-    bdd_manager_detach(bddm, element->reason_feasible_set);
+    bdd_manager_delete_vec(bddm, element->reason_feasible_set);
     safe_free(element->reasons);
     // Redirect map to the previous one
     int_hmap_pair_t* find = int_hmap_find(&db->var_to_feasible_set_map, x);
