@@ -559,10 +559,10 @@ static void default_handler(int signum) {
   if (verbosity > 0) {
     write_signum(signum);
   }
-  // we can't call show_stats here. This can cause a deadlock
-  //  if (show_stats) {
-  //    smt2_show_stats();
-  //  }
+  // smt2_show_stats should be safe here. It doesn't use printf.
+  if (show_stats) {
+    smt2_show_stats();
+  }
   _exit(YICES_EXIT_INTERRUPTED);
 }
 
@@ -635,6 +635,7 @@ static void force_utf8(void) {
 
 #endif
 
+
 int main(int argc, char *argv[]) {
   int32_t code;
   uint32_t i;
@@ -654,7 +655,7 @@ int main(int argc, char *argv[]) {
   }
 
   init_handlers();
-
+  
   yices_init();
   init_smt2(!incremental, timeout, interactive);
   if (smt2_model_format) smt2_force_smt2_model_format();
