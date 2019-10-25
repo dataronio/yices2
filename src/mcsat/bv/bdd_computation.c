@@ -321,20 +321,20 @@ int32_t bdds_is_constant_pow2(CUDD* cudd, BDD** a, uint32_t n) {
   }
 }
 
-static
-void bdd_min_max(CUDD* cudd, BDD* a, unsigned int* min, unsigned int* max) {
-
-  DdGen* a_gen;
-  BDD* current;
-  Cudd_ForeachNode(cudd->cudd, a, a_gen, current)
-  {
-    unsigned int current_index = Cudd_NodeReadIndex(current);
-    if (current_index > *max)
-      *max = current_index;
-    if (current_index < *min)
-      *min = current_index;
-  }
-}
+//static
+//void bdd_min_max(CUDD* cudd, BDD* a, unsigned int* min, unsigned int* max) {
+//
+//  DdGen* a_gen;
+//  BDD* current;
+//  Cudd_ForeachNode(cudd->cudd, a, a_gen, current)
+//  {
+//    unsigned int current_index = Cudd_NodeReadIndex(current);
+//    if (current_index > *max)
+//      *max = current_index;
+//    if (current_index < *min)
+//      *min = current_index;
+//  }
+//}
 
 bool bdds_are_disjoint(CUDD* cudd, BDD* a, BDD* b) {
   assert(a != NULL);
