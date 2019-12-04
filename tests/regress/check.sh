@@ -95,6 +95,12 @@ then
 	REGRESS_FILTER="." 
 fi
 
+if [[ -z "$TIME_LIMIT" ]];
+then
+  TIME_LIMIT=60 
+fi
+
+
 #
 # Check if MCSAT is supported
 #
@@ -161,7 +167,11 @@ for file in $all_tests; do
     fi
 
     # Run the binary
-    (time  ./$bin_dir/$binary $options ./$file >& $outfile ) >&  $timefile
+    (
+      ulimit -S -t $TIME_LIMIT &> /dev/null
+      ulimit -H -t $((1+$TIME_LIMIT)) &> /dev/null
+      (time ./$bin_dir/$binary $options ./$file >& $outfile ) >& $timefile
+    )
     thetime=`cat $timefile`
 
     # Do the diff
