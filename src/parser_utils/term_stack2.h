@@ -123,7 +123,7 @@ typedef enum tag_enum {
 typedef struct opval_s {
   int32_t opcode;
   uint32_t multiplicity;
-  uint32_t prev;
+  size_t prev;
 } opval_t;
 
 // binding
@@ -251,9 +251,9 @@ typedef struct op_table_s {
 struct tstack_s {
   stack_elem_t *elem;
 
-  uint32_t top;
-  uint32_t size;
-  uint32_t frame;
+  size_t top;
+  size_t size;
+  size_t frame;
   int32_t top_op;
 
   // operator table
@@ -303,7 +303,7 @@ struct tstack_s {
  * Default and maximal size
  */
 #define DEFAULT_TERM_STACK_SIZE 256
-#define MAX_TERM_STACK_SIZE (UINT32_MAX/sizeof(stack_elem_t))
+#define MAX_TERM_STACK_SIZE (SIZE_MAX/sizeof(stack_elem_t))
 
 /*
  * Default and maximal size of the t_aux vector

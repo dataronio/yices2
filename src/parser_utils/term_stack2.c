@@ -167,7 +167,7 @@ static void delete_op_table(op_table_t *table) {
  * - nops = size of the operator table
  */
 static void alloc_tstack(tstack_t *stack, uint32_t nops) {
-  uint32_t n;
+  size_t n;
   stack_elem_t *tmp;
 
   n = DEFAULT_TERM_STACK_SIZE;
@@ -217,7 +217,7 @@ static void alloc_tstack(tstack_t *stack, uint32_t nops) {
  * Extend: increase size by 50%
  */
 static void tstack_extend(tstack_t *stack) {
-  uint32_t n;
+  size_t n;
 
   n = stack->size + 1;
   n += n >> 1;
@@ -235,8 +235,8 @@ static void tstack_extend(tstack_t *stack) {
  * Return top index and extend the stack if it's full
  * also increment top.
  */
-static uint32_t tstack_get_top(tstack_t *stack) {
-  uint32_t i;
+static size_t tstack_get_top(tstack_t *stack) {
+  size_t i;
 
   i = stack->top;
   stack->top ++;
@@ -287,7 +287,7 @@ static stack_elem_t *tstack_get_topelem(tstack_t *stack) {
  * operation.
  */
 void tstack_push_op(tstack_t *stack, int32_t op, loc_t *loc) {
-  uint32_t i;
+  size_t i;
   stack_elem_t *e;
 
 #ifndef NDEBUG
@@ -924,7 +924,7 @@ void tstack_reset(tstack_t *stack) {
  * close the arena scope.
  */
 void tstack_pop_frame(tstack_t *stack) {
-  uint32_t i, n;
+  size_t i, n;
   int32_t op;
 
   op = stack->top_op;
@@ -959,7 +959,7 @@ void tstack_pop_frame(tstack_t *stack) {
  * Cannot be used if v is a string/symbol.
  */
 void copy_result_and_pop_frame(tstack_t *stack, stack_elem_t *v) {
-  uint32_t i, n;
+  size_t i, n;
   int32_t op;
 
   op = stack->top_op;
@@ -5414,7 +5414,7 @@ static void eval_error(tstack_t *stack, stack_elem_t *f, uint32_t n) {
  * Eval the top-level operation
  */
 void tstack_eval(tstack_t *stack) {
-  uint32_t n;
+  size_t n;
   int32_t op;
   stack_elem_t *f;
 
