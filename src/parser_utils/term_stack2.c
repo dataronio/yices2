@@ -251,7 +251,7 @@ static size_t tstack_get_top(tstack_t *stack) {
  * Same thing but return a pointer to element i
  */
 static stack_elem_t *tstack_get_topelem(tstack_t *stack) {
-  uint32_t k;
+  size_t k;
   // The order is important: tstack_get_top has side effects
   // (including changing stack->elem)!!
   k = tstack_get_top(stack);
