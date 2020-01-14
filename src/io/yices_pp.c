@@ -158,7 +158,7 @@ static const pp_standard_block_t standard_block[NUM_STANDARD_BLOCKS] = {
 /*
  * Table of non-standard blocks
  */
-#define NUM_NONSTANDARD_BLOCKS 14
+#define NUM_NONSTANDARD_BLOCKS 15
 
 static const pp_nonstandard_block_t nonstandard_block[NUM_NONSTANDARD_BLOCKS] = {
   { PP_OPEN, "", PP_HMT_LAYOUT, 0, 1, 1 },
@@ -172,6 +172,7 @@ static const pp_nonstandard_block_t nonstandard_block[NUM_NONSTANDARD_BLOCKS] = 
   { PP_OPEN_EXISTS, "exists ", PP_HMT_LAYOUT, 0, 7, 7 },
   { PP_OPEN_LAMBDA, "lambda ", PP_HMT_LAYOUT, 0, 7, 7 },
   { PP_OPEN_FUNCTION, "function ", PP_V_LAYOUT, PP_TOKEN_PAR_MASK, 1, 1 },
+  { PP_OPEN_SMT2_BV_DEC, "_ bv", PP_H_LAYOUT, PP_TOKEN_PAR_MASK, 0, 0 },
   { PP_OPEN_SMT2_BV_TYPE, "_ BitVec", PP_H_LAYOUT, PP_TOKEN_DEF_MASK, 0, 0},
   { PP_OPEN_SMT2_MODEL, "model", PP_T_LAYOUT, PP_TOKEN_DEF_MASK, 2, 2 },
   { PP_OPEN_SMT2_DEF, "define-fun", PP_HMT_LAYOUT, PP_TOKEN_DEF_MASK, 2, 2 },
@@ -896,7 +897,7 @@ void pp_bv(yices_pp_t *printer, uint32_t *bv, uint32_t n) {
 
 
 /*
- * Bitvector contants: 0, 1, -1
+ * Bitvector constants: 0, 1, -1
  */
 void pp_bv_zero(yices_pp_t *printer, uint32_t n) {
   pp_atom_t *atom;
